@@ -50,13 +50,32 @@ SiP.
 
 For readily available DigiKey sourcing, the practical part is:
 
-**ESP32-S3-PICO-1-N8R2** - 8 MB flash - 2 MB PSRAM - Dual-core
+**ESP32-S3-PICO-1-N8R8** - 8 MB flash - 8 MB PSRAM - Dual-core
 ESP32-S3 - Up to 240 MHz - Wi-Fi - Bluetooth LE - Native USB - I²S -
 SPI - SD/MMC - I²C - UART - Approx. 7 × 7 mm package - DigiKey one-off
 price observed: about \$6.10--\$6.25
 
+**Preferred production MCU:** ESP32-S3-PICO-1-N8R8 --- 8 MB flash + 8 MB
+PSRAM in the 7 × 7 mm PICO-1 package. The N8R2 variant should be
+retained as a sourcing fallback where electrically/package compatible,
+but it is no longer the primary TinyDAP target.
+
+### Why N8R8 is now preferred
+
+TinyDAP does not require 8 MB of PSRAM merely to decode FLAC; EMBER's
+Cardputer-Adv implementation demonstrates that useful FLAC playback is
+possible without PSRAM. The larger N8R8 configuration is instead chosen
+to provide substantial headroom for SD read-ahead, compressed-audio
+buffers, metadata, library indexing, playlists, networking, future UI
+features, and experimentation without increasing the PICO-1 PCB
+footprint.
+
+Latency-sensitive structures and I2S DMA buffers should still remain in
+internal SRAM. PSRAM should primarily hold larger, less latency-critical
+data structures.
+
 DigiKey:
-https://www.digikey.com/en/products/detail/espressif-systems/ESP32-S3-PICO-1-N8R2/21264372
+https://www.digikey.com/en/products/detail/espressif-systems/ESP32-S3-PICO-1-N8R8/21264372
 
 ### PSRAM
 
@@ -87,7 +106,7 @@ to breadboard the PICO SiP.
 Good prototype choices include:
 
 -   Espressif ESP32-S3-DevKitC-1 variants with PSRAM
--   Adafruit QT Py ESP32-S3 with 2 MB PSRAM for a smaller breadboard
+-   Adafruit QT Py ESP32-S3 with 8 MB PSRAM for a smaller breadboard
     setup
 
 Adafruit QT Py ESP32-S3 product family:
@@ -692,53 +711,27 @@ does not inherently require a separate conventional headphone amplifier.
 
 ------------------------------------------------------------------------
 
-# 17. Development Stage 0: M5Stack StickS3
+# 17. Development Stage 0: M5Stack Cardputer-Adv
 
-The **M5Stack StickS3 (K150)** should serve as TinyDAP **Development
-Stage 0**:
-https://shop.m5stack.com/products/m5sticks3-esp32s3-mini-iot-dev-kit
-
-It is not the final hardware target, but it is built on the
-**ESP32-S3-PICO-1-N8R8** (8 MB flash, 8 MB octal PSRAM), the same
-ESP32-S3-PICO SiP family planned for TinyDAP Rev A. It also provides an
-ES8311 audio codec, a 135 × 240 ST7789P3 display, two programmable
-buttons, a 250 mAh LiPo with an M5PM1 PMIC, USB-C, and ESP-IDF support.
+The already-owned **M5Stack Cardputer-Adv (K132-ADV)** should serve as
+TinyDAP **Development Stage 0**. It is not the final hardware target,
+but it provides an ESP32-S3-family platform with built-in microSD,
+display, controls, battery power, audio codec, headphone output, USB-C,
+and ESP-IDF support.
 
 This lets development begin with the actual ESP32/FreeRTOS environment
-— on nearly the same SiP as the final design — before the dedicated
-TinyDAP breadboard is assembled.
-
-The StickS3 replaces the previously planned M5Stack Cardputer-Adv
-(K132-ADV) as the Stage 0 platform.
-
-## StickS3 limitations for TinyDAP
-
-Compared with the Cardputer-Adv, the StickS3 has two important gaps:
-
--   **No built-in microSD slot.** Storage tests need either an external
-    microSD breakout wired over SPI through the Hat2-Bus or Grove GPIOs,
-    or temporary test tracks stored in flash (SPIFFS/LittleFS) until the
-    breakout is attached.
--   **No 3.5 mm headphone output.** The ES8311 drives an AW8737 amplifier
-    and the built-in 8 Ω / 1 W speaker. Stage 0 audio validation is
-    therefore functional (decoder, buffering, I2S/DMA, underruns), not a
-    headphone listening or fidelity test. Real headphone evaluation moves
-    to Stage 1 (PCM5102A) and Stage 2 (CS43131).
-
-It also has only two user buttons instead of a keyboard, so debug and
-navigation controls must be mapped onto short/long/combination presses
-or a serial console.
+before the dedicated TinyDAP breadboard is assembled.
 
 ## Stage 0 audio path
 
 ``` text
-Test audio (flash FS, or external SPI microSD breakout)
+Cardputer-Adv microSD
         |
         v
 FLAC / MP3 / WAV
         |
         v
-ESP32-S3-PICO-1
+ESP32-S3
         |
         +--> filesystem / metadata
         |
@@ -754,38 +747,98 @@ ESP32-S3-PICO-1
               ES8311
                 |
                 v
-         AW8737 amplifier
-                |
-                v
-        built-in speaker
+        3.5 mm headphones
 ```
 
-The StickS3 ES8311 (I2C address 0x18) uses I2C for codec control and I2S
-for audio. Documented connections are SCL G48 / SDA G47 for I2C (shared
-with the M5PM1 PMIC at 0x6E and the BMI270 IMU at 0x68), and MCLK G18,
-BCLK G17, LRCK G15, DOUT G14, DIN G16 for I2S. The display uses MOSI G39,
-SCK G40, RS G45, CS G41, RST G21, and backlight G38. Buttons are KEY1 G11
-and KEY2 G12. These assignments should be verified against the current
+The Cardputer-Adv ES8311 subsystem uses I2C for codec control and I2S
+for audio. Documented connections include GPIO 8/9 for I2C control and
+GPIO 41/43/46/42 for the audio interface. Its built-in microSD uses GPIO
+12/14/40/39. These assignments should be verified against the current
 M5Stack schematic before committing firmware.
 
-The built-in 135 × 240 display can temporarily show metadata, sample
+The built-in 240 × 135 display can temporarily show metadata, sample
 rate, codec, playback position, buffer fill, memory use, CPU/task
-diagnostics, and underrun counts. The two buttons plus a USB serial
-console can stand in for play/pause, previous, next, volume, menu, and
-debug controls.
+diagnostics, and underrun counts. The keyboard can stand in for
+play/pause, previous, next, volume, menu, and debug controls.
+
+## EMBER reference implementation
+
+**EMBER** by HorseyofCoursey should be treated as an important Stage 0
+reference implementation:
+
+https://github.com/HorseyofCoursey/EMBER
+
+EMBER is MIT-licensed music-player firmware for the Cardputer-Adv. It
+already demonstrates several capabilities directly relevant to TinyDAP,
+including local microSD playback, FLAC/MP3/WAV/AAC decoding, metadata
+and file browsing, album art, visualization, and network music
+streaming.
+
+Most importantly for TinyDAP, EMBER also demonstrates an **external I2S
+DAC path** from the Cardputer-Adv. Its documented external DAC support
+uses the Cardputer's second I2S peripheral, providing a useful working
+reference when bringing up our PCM5102A prototype and, later, the custom
+CS43131 carrier.
+
+EMBER should therefore be used to:
+
+-   Confirm known-working Cardputer-Adv audio and storage behavior.
+-   Study its decoder, buffering, filesystem, metadata, UI, and I2S
+    architecture.
+-   Accelerate external-DAC bring-up rather than proving every basic
+    ESP32-S3 audio concept from zero.
+-   Provide a comparison point when our own FreeRTOS/audio architecture
+    behaves unexpectedly.
+-   Identify Cardputer-Adv resource constraints before moving to the
+    TinyDAP hardware.
+
+Because EMBER is MIT licensed, code may be reused where appropriate as
+long as its license requirements and attribution are preserved.
+
+EMBER is **not** the TinyDAP architecture itself. TinyDAP remains a
+purpose-built player with a custom ESP32-S3 PCB, Winstar SPI OLED,
+dedicated controls, custom LiPo/power circuitry, microSD hardware, and
+the CS43131 DAC/headphone path. Code adopted from EMBER should be kept
+portable and separated from Cardputer-specific assumptions whenever
+practical.
+
+A useful progression is:
+
+``` text
+EMBER on Cardputer-Adv
+        |
+        | known-working local playback
+        v
+Cardputer-Adv external I2S
+        |
+        +--> PCM5102A prototype DAC
+        |
+        v
+our TinyDAP firmware architecture
+        |
+        v
+CS43131-CNZ carrier
+        |
+        v
+final TinyDAP hardware
+```
+
+This changes the purpose of Stage 0 slightly: rather than spending time
+proving that an ESP32-S3 can function as a capable music player, Stage 0
+should use EMBER as a reference while concentrating on the architecture
+and hardware interfaces that TinyDAP needs to own.
 
 ## Stage 0 goals
 
-Use the StickS3 to prove:
+Use the Cardputer-Adv to prove:
 
 -   ESP-IDF build/flash workflow
--   FreeRTOS task architecture on ESP32-S3-PICO
--   PSRAM usage for decode/PCM buffering
--   filesystem access (flash FS, then external SPI microSD)
+-   FreeRTOS task architecture
+-   microSD filesystem access
 -   FLAC, MP3, and WAV decoding
 -   PCM buffering
 -   I2S + DMA playback
--   ES8311 control over I2C (shared bus with PMIC/IMU)
+-   ES8311 control over I2C
 -   metadata parsing
 -   playlists/directory handling
 -   playback state machine and track changes
@@ -798,19 +851,18 @@ Use the StickS3 to prove:
 
 ## What it does not replace
 
-The StickS3 does **not** validate the final 128 × 64 SSD1306 over
-4-wire SPI, the dedicated microSD implementation, headphone output or
-audio quality, PCM5102A external bring-up, CS43131 circuitry, final
-power/charging system, final USB-C circuit, final physical controls, or
-final PCB layout.
+The Cardputer-Adv does **not** validate the final 128 × 64 SSD1306 over
+4-wire SPI, the dedicated microSD implementation, PCM5102A external
+bring-up, CS43131 circuitry, final power/charging system, final USB-C
+circuit, final physical controls, or final PCB layout.
 
 Those remain dedicated prototype milestones.
 
 ## Revised development sequence
 
 ``` text
-STAGE 0 — M5Stack StickS3
-flash/SPI microSD -> decoder -> PCM -> I2S -> ES8311 -> speaker
+STAGE 0 — Cardputer-Adv
+microSD -> decoder -> PCM -> I2S -> ES8311 -> headphones
         |
         v
 STAGE 1 — Dedicated ESP32-S3 breadboard
@@ -983,10 +1035,8 @@ architecture is doing its job.
 
 # 19. Complete prototype shopping list
 
-**Stage 0 development board:** M5Stack StickS3 (K150),
-https://shop.m5stack.com/products/m5sticks3-esp32s3-mini-iot-dev-kit.
-An optional SPI microSD breakout can be wired to its Hat2-Bus/Grove
-GPIOs for Stage 0 storage testing.
+**Already owned:** M5Stack Cardputer-Adv for Stage 0 development; no
+purchase is required for this stage.
 
 This is the **bench-ready prototype BOM**. It is intentionally different
 from the final production BOM. The goal is to have everything needed to
@@ -1000,7 +1050,7 @@ final DAC circuit the first dependency.
 
 -   **1× ESP32-S3 development board with PSRAM**
     -   Preferred: ESP32-S3-DevKitC-1 variant with PSRAM
-    -   Compact alternative: Adafruit QT Py ESP32-S3 with 2 MB PSRAM
+    -   Compact alternative: Adafruit QT Py ESP32-S3 with 8 MB PSRAM
 -   **1× USB data cable** appropriate for the selected ESP32-S3 board
 -   **1× solderless breadboard**
 -   **1 set male-to-male jumper wires**
@@ -1287,7 +1337,7 @@ production BOM.
   -----------------------------------------------------------------------------
   Function             Raw component          Current role
   -------------------- ---------------------- ---------------------------------
-  MCU                  ESP32-S3-PICO-1-N8R2   Main processor, Wi-Fi/BLE, USB,
+  MCU                  ESP32-S3-PICO-1-N8R8   Main processor, Wi-Fi/BLE, USB,
                                               I²S, SDMMC
 
   DAC/headphone        CS43131-CWZR           Final compact high-fidelity
@@ -1807,8 +1857,8 @@ https://www.digikey.com/en/products/detail/cirrus-logic-inc/CS43131-CNZ/7388594
 DigiKey official CS43131 evaluation board:
 https://www.digikey.com/en/products/detail/cirrus-logic-inc/CDB43131K/9178161
 
-DigiKey ESP32-S3-PICO-1-N8R2:
-https://www.digikey.com/en/products/detail/espressif-systems/ESP32-S3-PICO-1-N8R2/21264372
+DigiKey ESP32-S3-PICO-1-N8R8:
+https://www.digikey.com/en/products/detail/espressif-systems/ESP32-S3-PICO-1-N8R8/21264372
 
 Winstar WEA012864D-01 official:
 https://www.winstar.com.tw/products/oled-module/graphic-oled-display/oled-12864.html

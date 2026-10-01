@@ -24,7 +24,7 @@ Primary target:
 - physical controls
 
 Development platforms:
-- M5Stack StickS3 (K150) for Stage 0 ESP32-S3 firmware/audio development
+- Cardputer-Adv for Stage 0 ESP32-S3 firmware/audio development
 - ESP32-S3 breadboard for hardware prototype
 - Raspberry Pi optionally as a known-good I2S/reference test platform
 - Custom CS43131 QFN carrier before final PCB
