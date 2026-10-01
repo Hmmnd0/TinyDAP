@@ -756,6 +756,17 @@ GPIO 41/43/46/42 for the audio interface. Its built-in microSD uses GPIO
 12/14/40/39. These assignments should be verified against the current
 M5Stack schematic before committing firmware.
 
+The ES8311 is a **mono** codec, so the Cardputer-Adv's 3.5 mm output
+carries the same signal to both ears. It is sufficient for decoder,
+buffering, underrun, and track-change work, but not for stereo checks
+such as channel order, stereo content, or critical gapless listening.
+
+For stereo, connect the **PCM5102A** from the Stage 1 shopping list to
+the Cardputer-Adv's second, otherwise unused I2S peripheral, as EMBER
+does for its external DAC: GPIO 5 (BCK), GPIO 6 (LRCK), GPIO 3 (DIN),
+with the PCM5102A SCK pin tied to ground so it uses its internal PLL.
+This doubles as early PCM5102A bring-up before the Stage 1 breadboard.
+
 The built-in 240 × 135 display can temporarily show metadata, sample
 rate, codec, playback position, buffer fill, memory use, CPU/task
 diagnostics, and underrun counts. The keyboard can stand in for
@@ -839,6 +850,7 @@ Use the Cardputer-Adv to prove:
 -   PCM buffering
 -   I2S + DMA playback
 -   ES8311 control over I2C
+-   stereo output through an external PCM5102A on the second I2S port
 -   metadata parsing
 -   playlists/directory handling
 -   playback state machine and track changes
@@ -852,8 +864,8 @@ Use the Cardputer-Adv to prove:
 ## What it does not replace
 
 The Cardputer-Adv does **not** validate the final 128 × 64 SSD1306 over
-4-wire SPI, the dedicated microSD implementation, PCM5102A external
-bring-up, CS43131 circuitry, final power/charging system, final USB-C
+4-wire SPI, the dedicated microSD implementation, PCM5102A bring-up
+on the dedicated breadboard, CS43131 circuitry, final power/charging system, final USB-C
 circuit, final physical controls, or final PCB layout.
 
 Those remain dedicated prototype milestones.
@@ -862,7 +874,8 @@ Those remain dedicated prototype milestones.
 
 ``` text
 STAGE 0 — Cardputer-Adv
-microSD -> decoder -> PCM -> I2S -> ES8311 -> headphones
+microSD -> decoder -> PCM -> I2S -> ES8311 -> headphones (mono)
+                                 \-> PCM5102A -> headphones (stereo)
         |
         v
 STAGE 1 — Dedicated ESP32-S3 breadboard
@@ -1035,8 +1048,9 @@ architecture is doing its job.
 
 # 19. Complete prototype shopping list
 
-**Already owned:** M5Stack Cardputer-Adv for Stage 0 development; no
-purchase is required for this stage.
+**Already owned:** M5Stack Cardputer-Adv for Stage 0 development. The
+PCM5102A listed below is also used in Stage 0 for stereo output from the
+Cardputer-Adv, so it should be ordered first.
 
 This is the **bench-ready prototype BOM**. It is intentionally different
 from the final production BOM. The goal is to have everything needed to
