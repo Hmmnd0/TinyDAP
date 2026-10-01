@@ -94,9 +94,9 @@ buffers and PSRAM for larger, less timing-sensitive allocations such as:
 -   Future album-art decoding/caching
 -   Future wireless features
 
-Two megabytes is already generous for the intended player. An N8R8
-variant with 8 MB PSRAM is attractive if sourcing becomes convenient,
-but it is not required for successful lossless playback.
+Even 2 MB (N8R2) would be enough for basic lossless playback, which is
+why N8R2 remains a viable sourcing fallback. TinyDAP targets the N8R8's
+8 MB for the headroom described above, not because playback requires it.
 
 ### Prototype MCU board
 
@@ -1381,7 +1381,7 @@ production BOM.
 
 ------------------------------------------------------------------------
 
-# 19. Raw-component vs prototype equivalents
+# 22. Raw-component vs prototype equivalents
 
   ---------------------------------------------------------------------
   Final hardware                     Prototype equivalent
@@ -1412,7 +1412,7 @@ production BOM.
 
 ------------------------------------------------------------------------
 
-# 20. Recommended prototype sequence
+# 23. Recommended prototype sequence
 
 ## Phase 1 --- Make sound
 
@@ -1585,7 +1585,7 @@ ESP32 PCM/I2S
 
 ------------------------------------------------------------------------
 
-# 22. PCB layout strategy
+# 25. PCB layout strategy
 
 Target a **four-layer PCB**.
 
@@ -1632,7 +1632,7 @@ Suggested test pads:
 
 ------------------------------------------------------------------------
 
-# 23. Approximate physical target
+# 26. Approximate physical target
 
 Earlier estimates evolved as the display dimensions became clearer.
 
@@ -1660,7 +1660,7 @@ over saving the final few millimeters.
 
 ------------------------------------------------------------------------
 
-# 24. Firmware feature roadmap
+# 27. Firmware feature roadmap
 
 ## Minimum viable firmware
 
@@ -1734,7 +1734,7 @@ Local lossless playback is the primary design target.
 
 ------------------------------------------------------------------------
 
-# 26. Why prototype first
+# 29. Why prototype first
 
 Changing from immediate PCB production to a breadboard/module prototype
 is the safer development path.
@@ -1767,12 +1767,12 @@ is rock solid, the hardware can be condensed confidently.
 
 ------------------------------------------------------------------------
 
-# 27. Current design decisions
+# 30. Current design decisions
 
 ### Fairly firm
 
 -   ESP32-S3 architecture
--   PSRAM-equipped MCU
+-   ESP32-S3-PICO-1-N8R8 final MCU (N8R2 as sourcing fallback)
 -   Local microSD storage
 -   FLAC as primary lossless format
 -   0.96" 128×64 monochrome OLED
@@ -1784,7 +1784,6 @@ is rock solid, the hardware can be condensed confidently.
 
 ### Still under evaluation
 
--   N8R2 vs N8R8 final PICO
 -   CS43131 WLCSP vs QFN in final hardware
 -   Exact OLED panel
 -   Exact LiPo dimensions/capacity
@@ -1797,7 +1796,7 @@ is rock solid, the hardware can be condensed confidently.
 
 ------------------------------------------------------------------------
 
-# 28. Recommended immediate purchase
+# 31. Recommended immediate purchase
 
 For the first test, buy only enough hardware to prove the digital audio
 path:
@@ -1838,7 +1837,7 @@ Then substitute the CS43131 into a system that is already known to work.
 
 ------------------------------------------------------------------------
 
-# 29. Reference links
+# 32. Reference links
 
 Cirrus Logic CS43131: https://www.cirrus.com/products/cs43131/
 
