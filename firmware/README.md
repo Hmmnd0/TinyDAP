@@ -18,6 +18,8 @@ firmware/
 ├── components/
 │   ├── player/               portable core — no ESP-IDF dependencies
 │   │   ├── pcm_ring.c        lock-free SPSC PCM ring buffer
+│   │   ├── decoder.c         WAV/FLAC decoders behind one interface
+│   │   ├── third_party/      dr_flac.h (public domain / MIT-0)
 │   │   ├── wav.c             WAV header parser
 │   │   ├── browser.c         folder listing, natural sort
 │   │   └── tone.c            test-tone generator
@@ -27,7 +29,8 @@ firmware/
 └── host/                     native macOS/Linux build of the portable code
     ├── test_pcm_ring.c       unit + multithreaded stress tests
     ├── tone_to_wav.c         pipeline demo: tone -> ring -> WAV file
-    └── ui_demo.c             drives the UI on a real folder, saves BMP screens
+    ├── ui_demo.c             drives the UI on a real folder, saves BMP screens
+    └── decode_to_wav.c       decodes a file with TinyDAP's decoders, for reference checks
 ```
 
 This follows the platform split in write-up §20: everything in
@@ -38,14 +41,16 @@ draws the final 128x64 OLED layout; on the Cardputer it is scaled onto the
 
 ## Current state
 
-Browses the microSD card and plays WAV files (16/24-bit, mono/stereo,
-8–96 kHz; I2S retunes per track) through I2S → ES8311 → 3.5 mm jack, with
-auto-advance through the folder. Stereo is folded to mono for the ES8311.
+Browses the microSD card and plays FLAC (dr_flac, with title/artist/album
+tags) and WAV files (16/24-bit, mono/stereo, 8–96 kHz; I2S retunes per
+track) through I2S → ES8311 → 3.5 mm jack, with auto-advance through the
+folder. FLAC output is verified bit-identical to macOS `afconvert` on the
+host (`host/build/decode_to_wav`). Stereo is folded to mono for the ES8311.
 Verified on hardware with 0 underruns. Every 5 s the `stats` task logs
 state, ring fill, underruns, and free internal heap; every 30 s, per-task
 stack headroom.
 
-Next: FLAC with dr_flac, then MP3 with minimp3.
+Next: MP3 with minimp3.
 
 ### Controls (Cardputer-Adv)
 

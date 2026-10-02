@@ -11,14 +11,14 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "tinydap/pcm_ring.h"
-#include "tinydap/wav.h"
+#include "tinydap/decoder.h"
 
 static const char *TAG = "player";
 
 #define PCM_RING_BYTES   (32 * 1024)     /* ~186 ms at 44.1 kHz/16/2 */
 #define OUT_FRAME_BYTES  4               /* ring holds 16-bit stereo */
 #define OUT_CHUNK_FRAMES 256
-#define DECODE_FRAMES    1024
+#define DECODE_FRAMES    DECODER_MAX_FRAMES
 
 /* Core 1 runs the audio pipeline; core 0 runs everything else (§18). */
 #define CORE_AUDIO     1
@@ -55,12 +55,9 @@ static atomic_uint s_underruns;
 static atomic_uint s_frames_written;  /* frames into the ring this track */
 
 /* Decoder-task state */
-static FILE *s_file;
-static wav_info_t s_info;
-static uint32_t s_frames_left;
+static decoder_t *s_dec;
 static bool s_file_done;
 static uint32_t s_sink_rate = 44100;
-static uint8_t s_in[DECODE_FRAMES * 2 * 3];  /* up to stereo 24-bit */
 static int16_t s_out[DECODE_FRAMES * 2];
 
 /* ---------- audio output task ---------- */
@@ -134,10 +131,8 @@ static void set_state(player_state_t state, const char *error)
 
 static void close_file(void)
 {
-    if (s_file) {
-        fclose(s_file);
-        s_file = NULL;
-    }
+    decoder_close(s_dec);
+    s_dec = NULL;
 }
 
 static void stop_output_and_flush(void)
@@ -158,88 +153,62 @@ static void start_track(const char *path)
     s_status.track_id++;
     snprintf(s_status.path, sizeof s_status.path, "%s", path);
     memset(&s_status.fmt, 0, sizeof s_status.fmt);
+    memset(&s_status.tags, 0, sizeof s_status.tags);
+    s_status.codec[0] = '\0';
     s_status.total_frames = 0;
     xSemaphoreGive(s_lock);
 
     const char *err = NULL;
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        err = "Can't open file";
-    } else if (wav_open(f, &s_info, &err) != 0) {
-        /* err set by parser */
-    } else if (s_info.fmt.bits_per_sample != 16 && s_info.fmt.bits_per_sample != 24) {
-        err = "Need 16/24-bit PCM";
-    } else if (s_info.fmt.channels < 1 || s_info.fmt.channels > 2) {
-        err = "Need mono or stereo";
-    } else if (s_info.fmt.sample_rate < 8000 || s_info.fmt.sample_rate > 96000) {
-        err = "Unsupported rate";
-    }
+    decoder_info_t info;
+    decoder_t *dec = decoder_open(path, &info, &err);
 
-    if (!err && s_info.fmt.sample_rate != s_sink_rate) {
-        audio_format_t out = { .sample_rate = s_info.fmt.sample_rate, .bits_per_sample = 16, .channels = 2 };
+    if (dec && info.fmt.sample_rate != s_sink_rate) {
+        audio_format_t out = { .sample_rate = info.fmt.sample_rate, .bits_per_sample = 16, .channels = 2 };
         if (s_sink->open(s_sink, &out) == 0) {
             s_sink_rate = out.sample_rate;
         } else {
             err = "Rate change failed";
+            decoder_close(dec);
+            dec = NULL;
         }
     }
-    if (err) {
-        if (f) {
-            fclose(f);
-        }
+    if (!dec) {
         ESP_LOGW(TAG, "%s: %s", path, err);
         set_state(PLAYER_ERROR, err);
         return;
     }
 
-    s_file = f;
-    s_frames_left = s_info.frames;
+    s_dec = dec;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_status.fmt = s_info.fmt;
-    s_status.total_frames = s_info.frames;
+    s_status.fmt = info.fmt;
+    s_status.total_frames = info.total_frames;
+    snprintf(s_status.codec, sizeof s_status.codec, "%s", info.codec);
+    s_status.tags = info.tags;
     s_status.state = PLAYER_PLAYING;
     s_status.error[0] = '\0';
     xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "playing %s (%u Hz, %u-bit, %u ch)", path, (unsigned)s_info.fmt.sample_rate,
-             s_info.fmt.bits_per_sample, s_info.fmt.channels);
+    ESP_LOGI(TAG, "playing %s (%s %u Hz, %u-bit, %u ch)", path, info.codec,
+             (unsigned)info.fmt.sample_rate, info.fmt.bits_per_sample, info.fmt.channels);
     out_start();
 }
 
-/* Reads a block from the file and converts it to 16-bit stereo in the ring. */
+/* Decodes a block into the ring, folding to mono if needed. */
 static void decode_chunk(void)
 {
-    const int ch = s_info.fmt.channels;
-    const int bytes = s_info.fmt.bits_per_sample / 8;
-    const size_t in_frame = (size_t)ch * bytes;
-
-    uint32_t want = s_frames_left < DECODE_FRAMES ? s_frames_left : DECODE_FRAMES;
-    size_t got = want ? fread(s_in, 1, want * in_frame, s_file) / in_frame : 0;
+    size_t got = decoder_read(s_dec, s_out, DECODE_FRAMES);
     if (got == 0) {
         s_file_done = true;
         atomic_store(&s_eof, true);
         return;
     }
-    s_frames_left -= (uint32_t)got;
-
-    for (size_t i = 0; i < got; i++) {
-        const uint8_t *p = s_in + i * in_frame;
-        /* Little-endian; for 24-bit keep the top 16 bits. */
-        int off = bytes - 2;
-        int l = (int16_t)(p[off] | p[off + 1] << 8);
-        int r = ch == 2 ? (int16_t)(p[bytes + off] | p[bytes + off + 1] << 8) : l;
-        if (s_downmix) {
-            l = r = (l + r) / 2;
+    if (s_downmix) {
+        for (size_t i = 0; i < got; i++) {
+            int16_t m = (int16_t)((s_out[2 * i] + s_out[2 * i + 1]) / 2);
+            s_out[2 * i] = s_out[2 * i + 1] = m;
         }
-        s_out[2 * i] = (int16_t)l;
-        s_out[2 * i + 1] = (int16_t)r;
     }
     pcm_ring_write(&s_ring, s_out, got * OUT_FRAME_BYTES);
     atomic_fetch_add(&s_frames_written, (unsigned)got);
-
-    if (s_frames_left == 0) {
-        s_file_done = true;
-        atomic_store(&s_eof, true);
-    }
 }
 
 static void handle_command(const player_cmd_t *cmd)
@@ -271,7 +240,7 @@ static void handle_command(const player_cmd_t *cmd)
 static void decoder_task(void *arg)
 {
     for (;;) {
-        bool can_decode = s_file && !s_file_done && pcm_ring_free(&s_ring) >= sizeof s_out;
+        bool can_decode = s_dec && !s_file_done && pcm_ring_free(&s_ring) >= sizeof s_out;
         player_cmd_t cmd;
         if (xQueueReceive(s_cmds, &cmd, can_decode ? 0 : pdMS_TO_TICKS(5)) == pdTRUE) {
             handle_command(&cmd);
@@ -279,7 +248,7 @@ static void decoder_task(void *arg)
         }
         if (can_decode) {
             decode_chunk();
-        } else if (s_file && s_file_done && pcm_ring_used(&s_ring) == 0) {
+        } else if (s_dec && s_file_done && pcm_ring_used(&s_ring) == 0) {
             /* Everything decoded has been sent; let the DMA queue drain. */
             vTaskDelay(pdMS_TO_TICKS(50));
             out_stop();
@@ -306,7 +275,8 @@ void player_start(audio_sink_t *sink, bool mono_downmix)
 
     BaseType_t ok = xTaskCreatePinnedToCore(audio_out_task, "audio_out", 4096, NULL,
                                             PRIO_AUDIO_OUT, NULL, CORE_AUDIO);
-    ok &= xTaskCreatePinnedToCore(decoder_task, "decoder", 6144, NULL, PRIO_DECODER, NULL, CORE_AUDIO);
+    /* dr_flac decodes on the stack: ~7.2 KB measured for 16/44.1 FLAC. */
+    ok &= xTaskCreatePinnedToCore(decoder_task, "decoder", 16384, NULL, PRIO_DECODER, NULL, CORE_AUDIO);
     configASSERT(ok == pdPASS);
 }
 

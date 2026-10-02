@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "tinydap/audio_sink.h"
+#include "tinydap/decoder.h"
 
 typedef enum {
     PLAYER_STOPPED,
@@ -19,6 +20,8 @@ typedef struct {
     char path[256];
     char error[32];
     audio_format_t fmt;          /* source file format */
+    char codec[8];               /* "WAV", "FLAC" */
+    track_tags_t tags;
     uint32_t elapsed_frames;
     uint32_t total_frames;
     uint32_t underruns;

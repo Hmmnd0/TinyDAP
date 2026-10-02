@@ -47,6 +47,11 @@ static bool load_folder(ui_app_t *app, const char *path, uint32_t now_ms)
     return true;
 }
 
+static bool playable(entry_kind_t k)
+{
+    return k == ENTRY_WAV || k == ENTRY_FLAC;
+}
+
 static void play_queue_entry(ui_app_t *app)
 {
     char path[BROWSER_PATH_MAX + 128];
@@ -55,11 +60,11 @@ static void play_queue_entry(ui_app_t *app)
     }
 }
 
-/* Moves to the next/previous WAV in the playing folder. */
+/* Moves to the next/previous playable track in the playing folder. */
 static bool play_relative(ui_app_t *app, int dir)
 {
     for (int i = app->queue_pos + dir; i >= 0 && i < app->queue.count; i += dir) {
-        if (browser_kind(&app->queue, i) == ENTRY_WAV) {
+        if (playable(browser_kind(&app->queue, i))) {
             app->queue_pos = i;
             play_queue_entry(app);
             return true;
@@ -70,9 +75,8 @@ static bool play_relative(ui_app_t *app, int dir)
 
 static void play_from_browser(ui_app_t *app, uint32_t now_ms)
 {
-    entry_kind_t kind = browser_kind(&app->browse, app->cursor);
-    if (kind != ENTRY_WAV) {
-        show_message(app, "WAV only for now", now_ms);
+    if (!playable(browser_kind(&app->browse, app->cursor))) {
+        show_message(app, "MP3 not supported yet", now_ms);
         return;
     }
     memcpy(&app->queue, &app->browse, sizeof app->queue);
@@ -319,7 +323,7 @@ static void render_now_playing(const ui_app_t *app, fb_t *fb, const player_statu
     if (app->queue_valid) {
         int pos = 0, total = 0;
         for (int i = 0; i < app->queue.count; i++) {
-            if (browser_kind(&app->queue, i) == ENTRY_WAV) {
+            if (playable(browser_kind(&app->queue, i))) {
                 total++;
                 if (i <= app->queue_pos) {
                     pos = total;
@@ -335,40 +339,52 @@ static void render_now_playing(const ui_app_t *app, fb_t *fb, const player_statu
         return;
     }
 
-    /* Title: file name without extension, wrapped over two lines. */
+    /* Title from tags, else the file name without extension. */
+    const track_tags_t *tags = &st->tags;
     char title[BROWSER_PATH_MAX];
-    snprintf(title, sizeof title, "%s", base_name(st->path));
-    char *dot = strrchr(title, '.');
-    if (dot) {
-        *dot = '\0';
-    }
-    int per_line = FB_W / FONT_W;
-    fb_text(fb, 0, 12, title, FB_W, true);
-    if ((int)strlen(title) > per_line) {
-        fb_text(fb, 0, 21, title + per_line, FB_W, true);
+    if (tags->title[0]) {
+        snprintf(title, sizeof title, "%s", tags->title);
+    } else {
+        snprintf(title, sizeof title, "%s", base_name(st->path));
+        char *dot = strrchr(title, '.');
+        if (dot) {
+            *dot = '\0';
+        }
     }
 
     if (st->state == PLAYER_ERROR) {
-        fb_text(fb, 0, 32, st->error, FB_W, true);
+        fb_text(fb, 0, 12, title, FB_W, true);
+        fb_text(fb, 0, 31, st->error, FB_W, true);
         return;
     }
 
-    /* Folder, as a stand-in for album until tags are parsed. */
+    /* Folder, as a stand-in for album when there are no tags. */
     char folder[BROWSER_PATH_MAX];
     snprintf(folder, sizeof folder, "%s", st->path);
     char *slash = strrchr(folder, '/');
     if (slash) {
         *slash = '\0';
     }
-    fb_text(fb, 0, 31, base_name(folder), FB_W, true);
+
+    int per_line = FB_W / FONT_W;
+    fb_text(fb, 0, 12, title, FB_W, true);
+    if (tags->artist[0] || tags->album[0]) {
+        fb_text(fb, 0, 21, tags->artist, FB_W, true);
+        fb_text(fb, 0, 31, tags->album[0] ? tags->album : base_name(folder), FB_W, true);
+    } else {
+        if ((int)strlen(title) > per_line) {
+            fb_text(fb, 0, 21, title + per_line, FB_W, true);
+        }
+        fb_text(fb, 0, 31, base_name(folder), FB_W, true);
+    }
 
     char line[64];
     unsigned rate = (unsigned)st->fmt.sample_rate;
     if (rate % 1000 == 0) {
-        snprintf(line, sizeof line, "%ukHz %ubit WAV", rate / 1000, st->fmt.bits_per_sample);
+        snprintf(line, sizeof line, "%ukHz %ubit %s", rate / 1000, st->fmt.bits_per_sample, st->codec);
     } else {
-        snprintf(line, sizeof line, "%u.%ukHz %ubit WAV", rate / 1000, rate % 1000 / 100,
-                 st->fmt.bits_per_sample);
+        snprintf(line, sizeof line, "%u.%ukHz %ubit %s", rate / 1000, rate % 1000 / 100,
+                 st->fmt.bits_per_sample, st->codec);
     }
     fb_text(fb, 0, 40, line, FB_W, true);
 

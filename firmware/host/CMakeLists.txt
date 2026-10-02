@@ -22,3 +22,6 @@ target_link_libraries(tone_to_wav tinydap_player Threads::Threads)
 
 add_executable(ui_demo ui_demo.c)
 target_link_libraries(ui_demo tinydap_ui)
+
+add_executable(decode_to_wav decode_to_wav.c wav_sink.c)
+target_link_libraries(decode_to_wav tinydap_player)

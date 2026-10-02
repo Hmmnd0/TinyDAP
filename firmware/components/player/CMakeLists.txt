@@ -1,6 +1,6 @@
 # Portable player core: no ESP-IDF or FreeRTOS dependencies, so it builds
 # both as an ESP-IDF component and as a plain library for host tests.
-set(PLAYER_SRCS "pcm_ring.c" "tone.c" "wav.c" "browser.c")
+set(PLAYER_SRCS "pcm_ring.c" "tone.c" "wav.c" "browser.c" "decoder.c" "dr_flac_impl.c")
 
 if(ESP_PLATFORM)
     idf_component_register(SRCS ${PLAYER_SRCS}

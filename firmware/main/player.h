@@ -6,7 +6,7 @@
 #include "tinydap/player_status.h"
 
 /*
- * WAV playback engine (write-up §18): a decoder task reads the file and fills
+ * Playback engine (write-up §18): a decoder task decodes WAV/FLAC and fills
  * the PCM ring; a higher-priority audio task drains it into the sink. Output
  * is always 16-bit stereo at the file's sample rate.
  *

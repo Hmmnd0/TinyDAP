@@ -12,7 +12,7 @@
 #include <string.h>
 
 #include "tinydap/ui_app.h"
-#include "tinydap/wav.h"
+#include "tinydap/decoder.h"
 
 #define SCALE 4
 
@@ -21,23 +21,24 @@ static player_status_t s_st;
 static void fake_play(void *ctx, const char *path)
 {
     (void)ctx;
+    uint32_t id = s_st.track_id;
     memset(&s_st, 0, sizeof s_st);
-    s_st.track_id++;
+    s_st.track_id = id + 1;
     snprintf(s_st.path, sizeof s_st.path, "%s", path);
-    FILE *f = fopen(path, "rb");
-    wav_info_t info;
+    decoder_info_t info;
     const char *err = "can't open";
-    if (f && wav_open(f, &info, &err) == 0) {
+    decoder_t *d = decoder_open(path, &info, &err);
+    if (d) {
         s_st.state = PLAYER_PLAYING;
         s_st.fmt = info.fmt;
-        s_st.total_frames = info.frames;
-        s_st.elapsed_frames = info.frames / 3;
+        s_st.total_frames = info.total_frames;
+        s_st.elapsed_frames = info.total_frames / 3;
+        snprintf(s_st.codec, sizeof s_st.codec, "%s", info.codec);
+        s_st.tags = info.tags;
+        decoder_close(d);
     } else {
         s_st.state = PLAYER_ERROR;
         snprintf(s_st.error, sizeof s_st.error, "%s", err);
-    }
-    if (f) {
-        fclose(f);
     }
 }
 
