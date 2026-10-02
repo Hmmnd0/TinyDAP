@@ -8,7 +8,7 @@ high-fidelity Cirrus Logic CS43131 DAC/headphone driver, with a 0.96"
 128×64 OLED and physical buttons, targeting a custom PCB of roughly
 32 × 27 mm.
 
-**Status:** Stage 0, firmware bring-up on development hardware.
+**Status:** Stage 0 — FLAC and WAV playback with an SD browser UI running on the Cardputer-Adv.
 
 ## Target hardware
 
@@ -40,6 +40,7 @@ hardware/   Schematics and PCB (not started)
 ```
 
 - **Design and specification:** [docs/TinyDAP_Project_Writeup.md](docs/TinyDAP_Project_Writeup.md)
+- **Stage 0 measurements and findings:** [docs/Stage0_Findings.md](docs/Stage0_Findings.md)
 - **Building and flashing the firmware:** [firmware/README.md](firmware/README.md)
 
 ## Firmware at a glance
