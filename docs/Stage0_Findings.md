@@ -14,7 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
-| 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | *this commit* |
+| 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | `e241123` |
 | 2026-10-02 | 24/96 FLAC first test: short run clean, then 503 underruns on continued play | `29548a9` |
 | 2026-10-02 | FLAC playback (dr_flac), tags on Now Playing | `574ae93` |
 | 2026-10-02 | SD card browser UI + WAV playback | `82b3caf` |
