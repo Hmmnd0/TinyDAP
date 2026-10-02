@@ -14,7 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
-| 2026-10-02 | MP3 verified on device; aligned storage reads; SD throughput stats | *this commit* |
+| 2026-10-02 | MP3 verified on device; aligned storage reads; SD throughput stats | `97eb777` |
 | 2026-10-02 | MP3 (minimp3, ID3v2 tags), gapless playback, folder repeat | `e9dae55` |
 | 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | `e241123` |
 | 2026-10-02 | 24/96 FLAC first test: short run clean, then 503 underruns on continued play | `29548a9` |
