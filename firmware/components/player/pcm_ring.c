@@ -52,6 +52,11 @@ size_t pcm_ring_read(pcm_ring_t *r, void *dst, size_t len)
     return len;
 }
 
+void pcm_ring_reset(pcm_ring_t *r)
+{
+    atomic_store(&r->tail, atomic_load(&r->head));
+}
+
 size_t pcm_ring_used(pcm_ring_t *r)
 {
     /* Load tail before head: head only grows and never falls behind tail,

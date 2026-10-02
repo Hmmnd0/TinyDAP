@@ -8,6 +8,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_compile_options(-Wall -Wextra)
 
 add_subdirectory(../components/player player)
+add_subdirectory(../components/ui ui)
 find_package(Threads REQUIRED)
 
 enable_testing()
@@ -18,3 +19,6 @@ add_test(NAME pcm_ring COMMAND test_pcm_ring)
 
 add_executable(tone_to_wav tone_to_wav.c wav_sink.c)
 target_link_libraries(tone_to_wav tinydap_player Threads::Threads)
+
+add_executable(ui_demo ui_demo.c)
+target_link_libraries(ui_demo tinydap_ui)

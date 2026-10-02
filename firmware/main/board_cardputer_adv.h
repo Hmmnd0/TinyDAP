@@ -40,3 +40,28 @@
 #define BOARD_EXT_I2S_BCLK  5
 #define BOARD_EXT_I2S_WS    6
 #define BOARD_EXT_I2S_DOUT  3
+
+/* ST7789 LCD, 240 x 135 landscape, own SPI bus (M5GFX board config) */
+#define BOARD_LCD_SPI_HOST  SPI3_HOST
+#define BOARD_LCD_MOSI      35
+#define BOARD_LCD_SCLK      36
+#define BOARD_LCD_DC        34
+#define BOARD_LCD_CS        37
+#define BOARD_LCD_RST       33
+#define BOARD_LCD_BL        38
+#define BOARD_LCD_W         240
+#define BOARD_LCD_H         135
+/* Landscape orientation: panel RAM offsets after swapping axes. If the
+ * picture is mirrored or upside down, flip MIRROR_X/Y and use gap y 52. */
+#define BOARD_LCD_SWAP_XY   1
+#define BOARD_LCD_MIRROR_X  1
+#define BOARD_LCD_MIRROR_Y  0
+#define BOARD_LCD_GAP_X     40
+#define BOARD_LCD_GAP_Y     53
+
+/* microSD SPI host (the LCD uses SPI3) */
+#define BOARD_SD_SPI_HOST   SPI2_HOST
+
+/* TCA8418 keyboard matrix controller on the internal I2C bus (M5Cardputer) */
+#define BOARD_KB_I2C_ADDR   0x34
+#define BOARD_KB_INT        11

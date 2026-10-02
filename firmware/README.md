@@ -6,35 +6,65 @@ ESP-IDF project for the ESP32-S3. Stage 0 target: M5Stack Cardputer-Adv.
 
 ```
 firmware/
-├── main/                     ESP32 entry point, FreeRTOS tasks, board pin map
-│   ├── main.c
-│   └── board_cardputer_adv.h
+├── main/                     ESP32 / Cardputer-Adv platform code
+│   ├── main.c                startup, input/UI/stats tasks, key mapping
+│   ├── player.c              WAV playback engine: decoder + audio tasks (§18)
+│   ├── i2s_sink.c            I2S audio output
+│   ├── es8311.c              ES8311 codec driver
+│   ├── display.c             ST7789 driver, shows the 128x64 UI scaled up
+│   ├── keyboard.c            TCA8418 keyboard driver
+│   ├── sdcard.c              microSD mount (SPI, FAT32)
+│   └── board_cardputer_adv.h pin map
 ├── components/
-│   └── player/               portable player core — no ESP-IDF dependencies
-│       ├── include/tinydap/
-│       │   ├── pcm_ring.h    lock-free SPSC PCM ring buffer
-│       │   ├── audio_sink.h  audio output abstraction (ES8311/PCM5102A/CS43131/WAV)
-│       │   └── tone.h        test-tone generator (decoder stand-in)
-│       ├── pcm_ring.c
-│       └── tone.c
-└── host/                     native macOS/Linux build of components/player
+│   ├── player/               portable core — no ESP-IDF dependencies
+│   │   ├── pcm_ring.c        lock-free SPSC PCM ring buffer
+│   │   ├── wav.c             WAV header parser
+│   │   ├── browser.c         folder listing, natural sort
+│   │   └── tone.c            test-tone generator
+│   └── ui/                   portable UI — no ESP-IDF dependencies
+│       ├── fb.c, font5x7.c   128x64 1-bit framebuffer (SSD1306 layout) + font
+│       └── ui_app.c          SD browser and Now Playing screens
+└── host/                     native macOS/Linux build of the portable code
     ├── test_pcm_ring.c       unit + multithreaded stress tests
     ├── tone_to_wav.c         pipeline demo: tone -> ring -> WAV file
-    └── wav_sink.c            audio_sink that writes WAV
+    └── ui_demo.c             drives the UI on a real folder, saves BMP screens
 ```
 
 This follows the platform split in write-up §20: everything in
-`components/player` must stay free of ESP-IDF/FreeRTOS includes so it builds
-on the host and ports unchanged to the Stage 1 breadboard and Rev A.
+`components/` must stay free of ESP-IDF/FreeRTOS includes so it builds on
+the host and ports unchanged to the Stage 1 breadboard and Rev A. The UI
+draws the final 128x64 OLED layout; on the Cardputer it is scaled onto the
+240x135 LCD.
 
 ## Current state
 
-The task layout from write-up §18 is in place. A 440 Hz test tone plays
-decoder → PCM ring → audio output → I2S → ES8311 → 3.5 mm jack (mono),
-verified on hardware. Every 2 s the `stats` task logs ring fill, underrun
-count, free internal heap, and per-task stack headroom.
+Browses the microSD card and plays WAV files (16/24-bit, mono/stereo,
+8–96 kHz; I2S retunes per track) through I2S → ES8311 → 3.5 mm jack, with
+auto-advance through the folder. Stereo is folded to mono for the ES8311.
+Verified on hardware with 0 underruns. Every 5 s the `stats` task logs
+state, ring fill, underruns, and free internal heap; every 30 s, per-task
+stack headroom.
 
-Next: the storage task reads a WAV from microSD in place of the tone.
+Next: FLAC with dr_flac, then MP3 with minimp3.
+
+### Controls (Cardputer-Adv)
+
+| Key | Action |
+|---|---|
+| `;` / `.` | Up / down (hold to repeat) |
+| `/` or Enter | Open folder / play |
+| `,`, `` ` `` or Backspace | Back |
+| Space | Play / pause |
+| `n` / `b` | Next / previous track |
+| `=` / `-` | Volume up / down |
+| `m` | Browser ↔ Now Playing |
+
+### Preparing an SD card
+
+FAT32 only (exFAT is disabled in ESP-IDF's FatFs). Convert music to WAV
+with `../tools/to_wav.sh <source> <dest>` (macOS `afconvert`, 16-bit
+44.1 kHz, keeps folder structure), copy to the card, then remove macOS
+`._*` files from the copied folders.
 
 ## ESP32 build
 
@@ -73,6 +103,10 @@ cmake -S host -B host/build && cmake --build host/build && ctest --test-dir host
 
 ```bash
 ./host/build/tone_to_wav tone.wav
+```
+
+```bash
+./host/build/ui_demo ~/Music/some-folder /tmp/screens "dss"
 ```
 
 ## Testing without hardware

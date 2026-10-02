@@ -32,6 +32,9 @@ size_t pcm_ring_write(pcm_ring_t *r, const void *src, size_t len);
 /* Consumer side. Copies up to len bytes; returns the number copied. */
 size_t pcm_ring_read(pcm_ring_t *r, void *dst, size_t len);
 
+/* Discards buffered data. Only safe while neither side is reading or writing. */
+void pcm_ring_reset(pcm_ring_t *r);
+
 /* Bytes currently buffered. Safe to call from any task (e.g. for stats). */
 size_t pcm_ring_used(pcm_ring_t *r);
 

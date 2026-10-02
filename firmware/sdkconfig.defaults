@@ -17,3 +17,6 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 
 # Long file names on microSD
 CONFIG_FATFS_LFN_HEAP=y
+
+# app_main builds the first folder listing
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

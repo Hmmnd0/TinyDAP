@@ -1,171 +1,166 @@
 /*
- * TinyDAP firmware entry point — Stage 0 task layout (write-up §18).
+ * TinyDAP firmware entry point — Stage 0 on the Cardputer-Adv.
  *
- * Current state: a test tone flows decoder -> PCM ring -> audio output ->
- * I2S -> ES8311 -> 3.5 mm jack (mono). Next: the storage task reads WAV from
- * microSD in place of the tone.
+ * Browse the microSD card and play WAV files: keyboard -> input task -> UI
+ * task -> player (decoder + audio tasks, §18) -> I2S -> ES8311 -> 3.5 mm jack.
+ * The UI renders the final 128x64 OLED layout, scaled onto the ST7789.
  */
 
-#include <stdatomic.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "board_cardputer_adv.h"
+#include "display.h"
 #include "es8311.h"
 #include "i2s_sink.h"
-#include "tinydap/audio_sink.h"
-#include "tinydap/pcm_ring.h"
-#include "tinydap/tone.h"
+#include "keyboard.h"
+#include "player.h"
+#include "sdcard.h"
+#include "tinydap/ui_app.h"
 
 static const char *TAG = "tinydap";
 
-#define SAMPLE_RATE      44100
-#define FRAME_BYTES      4                      /* 16-bit stereo */
-#define PCM_RING_BYTES   (32 * 1024)            /* ~186 ms at 44.1 kHz/16/2 */
-#define AUDIO_TICK_MS    10
-#define AUDIO_TICK_BYTES (SAMPLE_RATE / (1000 / AUDIO_TICK_MS) * FRAME_BYTES)
+#define DEFAULT_VOLUME_DB (-12)
+#define UI_FRAME_MS       33
+#define KEY_POLL_MS       10
+#define REPEAT_DELAY_MS   400
+#define REPEAT_RATE_MS    80
 
-/* Tone at -20 dBFS, codec at 0 dB. The ES8311 output is quiet: M5Unified
- * applies 16x software gain on this board. */
-#define TONE_AMPLITUDE   0.1f
-#define CODEC_VOLUME_DB  0
-
-/* Core 1 runs the audio pipeline; core 0 runs everything else (§18). */
-#define CORE_AUDIO  1
+#define PRIO_INPUT  8
+#define PRIO_UI     5
+#define PRIO_STATS  2
 #define CORE_SYSTEM 0
 
-#define PRIO_AUDIO_OUT (configMAX_PRIORITIES - 2)
-#define PRIO_DECODER   (configMAX_PRIORITIES - 3)
-#define PRIO_STORAGE   (configMAX_PRIORITIES - 4)
-#define PRIO_INPUT     8
-#define PRIO_UI        5
-#define PRIO_STATS     2
+static QueueHandle_t s_inputs;   /* ui_input_t */
+static ui_app_t s_app;
+static fb_t s_fb;
 
-enum { T_AUDIO_OUT, T_DECODER, T_STORAGE, T_INPUT, T_UI, T_STATS, T_COUNT };
-static TaskHandle_t s_tasks[T_COUNT];
-
-static pcm_ring_t s_pcm;
-static atomic_uint s_underruns;
-static audio_sink_t *s_sink;
-
-/* Highest priority: an underrun here is immediately audible. Pacing comes
- * from the sink's blocking write into the I2S DMA queue. */
-static void audio_out_task(void *arg)
+static uint32_t now_ms(void)
 {
-    static uint8_t buf[AUDIO_TICK_BYTES];
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
 
-    /* Prebuffer so startup isn't counted as an underrun. */
-    while (pcm_ring_used(&s_pcm) < pcm_ring_capacity(&s_pcm) / 2) {
-        vTaskDelay(1);
-    }
+/* ---------- player ops for the UI ---------- */
 
-    for (;;) {
-        size_t got = pcm_ring_read(&s_pcm, buf, sizeof buf);
-        if (got < sizeof buf) {
-            memset(buf + got, 0, sizeof buf - got);  /* pad with silence */
-            atomic_fetch_add(&s_underruns, 1);
-        }
-        for (size_t off = 0; off < sizeof buf;) {
-            int n = s_sink->write(s_sink, buf + off, sizeof buf - off, 100);
-            if (n < 0) {
-                ESP_LOGE(TAG, "audio sink write failed");
-                break;
-            }
-            off += (size_t)n;
-        }
+static void ops_play(void *ctx, const char *path) { player_play(path); }
+static void ops_toggle_pause(void *ctx) { player_toggle_pause(); }
+static void ops_stop(void *ctx) { player_stop(); }
+static void ops_volume(void *ctx, int db) { es8311_set_volume_db(db); }
+
+/* ---------- input: Cardputer keys -> UI events ---------- */
+
+/* Same keys as EMBER where they overlap. */
+static bool map_key(char key, ui_input_t *out)
+{
+    switch (key) {
+    case ';': *out = UI_UP; return true;
+    case '.': *out = UI_DOWN; return true;
+    case '/':
+    case KEY_ENTER: *out = UI_SELECT; return true;
+    case ',':
+    case '`':
+    case KEY_BACKSPACE: *out = UI_BACK; return true;
+    case ' ': *out = UI_PLAY_PAUSE; return true;
+    case 'n': *out = UI_NEXT; return true;
+    case 'b': *out = UI_PREV; return true;
+    case '=': *out = UI_VOL_UP; return true;
+    case '-': *out = UI_VOL_DOWN; return true;
+    case 'm': *out = UI_VIEW_TOGGLE; return true;
+    default: return false;
     }
 }
 
-/* Keeps the PCM ring topped up ahead of the audio output. */
-static void decoder_task(void *arg)
+static bool repeats(ui_input_t in)
 {
-    int16_t chunk[256 * 2];
-    tone_t tone;
-    tone_init(&tone, SAMPLE_RATE, 440.0f, TONE_AMPLITUDE);
-
-    for (;;) {
-        /* TODO(step 4): decode FLAC/MP3 from the compressed-data buffer. */
-        if (pcm_ring_free(&s_pcm) >= sizeof chunk) {
-            tone_fill_s16_stereo(&tone, chunk, 256);
-            pcm_ring_write(&s_pcm, chunk, sizeof chunk);
-        } else {
-            vTaskDelay(1);
-        }
-    }
-}
-
-static void storage_task(void *arg)
-{
-    /* TODO(step 3): mount microSD, read-ahead file data into a compressed
-     * buffer for the decoder. */
-    for (;;) {
-        vTaskDelay(portMAX_DELAY);
-    }
+    return in == UI_UP || in == UI_DOWN || in == UI_VOL_UP || in == UI_VOL_DOWN;
 }
 
 static void input_task(void *arg)
 {
-    /* TODO: keyboard -> player command queue (play/pause, prev/next, volume). */
+    key_event_t ev[8];
+    char held = 0;
+    uint32_t next_repeat = 0;
+
     for (;;) {
-        vTaskDelay(portMAX_DELAY);
+        int n = keyboard_read(ev, 8);
+        for (int i = 0; i < n; i++) {
+            ui_input_t in;
+            if (!map_key(ev[i].key, &in)) {
+                continue;
+            }
+            if (ev[i].pressed) {
+                xQueueSend(s_inputs, &in, 0);
+                if (repeats(in)) {
+                    held = ev[i].key;
+                    next_repeat = now_ms() + REPEAT_DELAY_MS;
+                }
+            } else if (ev[i].key == held) {
+                held = 0;
+            }
+        }
+        ui_input_t in;
+        if (held && (int32_t)(now_ms() - next_repeat) >= 0 && map_key(held, &in)) {
+            xQueueSend(s_inputs, &in, 0);
+            next_repeat = now_ms() + REPEAT_RATE_MS;
+        }
+        vTaskDelay(pdMS_TO_TICKS(KEY_POLL_MS));
     }
 }
 
+/* ---------- UI ---------- */
+
 static void ui_task(void *arg)
 {
-    /* TODO: on-screen diagnostics (§17): metadata, buffer fill, underruns. */
+    player_status_t st;
     for (;;) {
-        vTaskDelay(portMAX_DELAY);
+        ui_input_t in;
+        bool got = xQueueReceive(s_inputs, &in, pdMS_TO_TICKS(UI_FRAME_MS)) == pdTRUE;
+        player_get_status(&st);
+        while (got) {
+            ui_app_input(&s_app, in, &st, now_ms());
+            player_get_status(&st);
+            got = xQueueReceive(s_inputs, &in, 0) == pdTRUE;
+        }
+        ui_app_tick(&s_app, &st, now_ms());
+        ui_app_render(&s_app, &s_fb, &st, now_ms());
+        display_show(&s_fb);
     }
 }
 
 /* Logs the §18 "What to measure" numbers available so far. */
 static void stats_task(void *arg)
 {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(2000));
-
-        unsigned fill_pct = (unsigned)(pcm_ring_used(&s_pcm) * 100 / pcm_ring_capacity(&s_pcm));
-        ESP_LOGI(TAG, "pcm fill %u%%  underruns %u  internal heap free %u (min %u)",
-                 fill_pct,
-                 atomic_load(&s_underruns),
+    static char tasks[1024];
+    for (int n = 0;; n++) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        player_status_t st;
+        player_get_status(&st);
+        ESP_LOGI(TAG, "state %d  pcm fill %u%%  underruns %u  internal heap free %u (min %u)",
+                 st.state, st.buffer_pct, (unsigned)st.underruns,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
-
-        for (int i = 0; i < T_COUNT; i++) {
-            ESP_LOGI(TAG, "  %-10s stack free %u B", pcTaskGetName(s_tasks[i]),
-                     (unsigned)uxTaskGetStackHighWaterMark(s_tasks[i]));
+        if (n % 6 == 0) {
+            vTaskList(tasks);
+            ESP_LOGI(TAG, "task  state prio stack-free num core\n%s", tasks);
         }
     }
-}
-
-static void spawn(TaskFunction_t fn, const char *name, uint32_t stack_bytes,
-                  UBaseType_t prio, BaseType_t core, int slot)
-{
-    BaseType_t ok = xTaskCreatePinnedToCore(fn, name, stack_bytes, NULL, prio,
-                                            &s_tasks[slot], core);
-    configASSERT(ok == pdPASS);
 }
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "TinyDAP Stage 0 on %s", BOARD_NAME);
 
-    /* Latency-critical PCM stays in internal SRAM, never PSRAM (§2, §18). */
-    void *ring_mem = heap_caps_malloc(PCM_RING_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    configASSERT(ring_mem && pcm_ring_init(&s_pcm, ring_mem, PCM_RING_BYTES));
-
     /* Start I2S first: the ES8311 derives its clock from BCLK. */
-    s_sink = i2s_sink_create(BOARD_CODEC_I2S_PORT, BOARD_CODEC_I2S_BCLK, BOARD_CODEC_I2S_WS,
-                             BOARD_CODEC_I2S_DOUT, BOARD_CODEC_I2S_MCLK);
-    audio_format_t fmt = { .sample_rate = SAMPLE_RATE, .bits_per_sample = 16, .channels = 2 };
-    configASSERT(s_sink && s_sink->open(s_sink, &fmt) == 0);
+    audio_sink_t *sink = i2s_sink_create(BOARD_CODEC_I2S_PORT, BOARD_CODEC_I2S_BCLK, BOARD_CODEC_I2S_WS,
+                                         BOARD_CODEC_I2S_DOUT, BOARD_CODEC_I2S_MCLK);
+    audio_format_t fmt = { .sample_rate = 44100, .bits_per_sample = 16, .channels = 2 };
+    configASSERT(sink && sink->open(sink, &fmt) == 0);
 
     i2c_master_bus_handle_t i2c_bus;
     i2c_master_bus_config_t bus_cfg = {
@@ -178,13 +173,24 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &i2c_bus));
     if (es8311_init(i2c_bus, BOARD_CODEC_I2C_ADDR) == ESP_OK) {
-        es8311_set_volume_db(CODEC_VOLUME_DB);
+        es8311_set_volume_db(DEFAULT_VOLUME_DB);
     }
+    if (keyboard_init(i2c_bus, BOARD_KB_I2C_ADDR) != ESP_OK) {
+        ESP_LOGE(TAG, "keyboard not found");
+    }
+    if (display_init() != ESP_OK) {
+        ESP_LOGE(TAG, "display init failed");
+    }
+    bool sd_ok = sdcard_mount();
 
-    spawn(decoder_task,   "decoder",   8192, PRIO_DECODER,   CORE_AUDIO,  T_DECODER);
-    spawn(audio_out_task, "audio_out", 4096, PRIO_AUDIO_OUT, CORE_AUDIO,  T_AUDIO_OUT);
-    spawn(storage_task,   "storage",   4096, PRIO_STORAGE,   CORE_SYSTEM, T_STORAGE);
-    spawn(input_task,     "input",     3072, PRIO_INPUT,     CORE_SYSTEM, T_INPUT);
-    spawn(ui_task,        "ui",        4096, PRIO_UI,        CORE_SYSTEM, T_UI);
-    spawn(stats_task,     "stats",     4096, PRIO_STATS,     CORE_SYSTEM, T_STATS);
+    /* The ES8311 is mono: fold stereo into it rather than dropping a channel. */
+    player_start(sink, true);
+
+    s_inputs = xQueueCreate(16, sizeof(ui_input_t));
+    player_ops_t ops = { ops_play, ops_toggle_pause, ops_stop, ops_volume, NULL };
+    ui_app_init(&s_app, SDCARD_MOUNT, sd_ok, &ops, DEFAULT_VOLUME_DB);
+
+    xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, PRIO_INPUT, NULL, CORE_SYSTEM);
+    xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, PRIO_UI, NULL, CORE_SYSTEM);
+    xTaskCreatePinnedToCore(stats_task, "stats", 4096, NULL, PRIO_STATS, NULL, CORE_SYSTEM);
 }
