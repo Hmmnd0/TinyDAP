@@ -25,3 +25,12 @@ target_link_libraries(ui_demo tinydap_ui)
 
 add_executable(decode_to_wav decode_to_wav.c wav_sink.c)
 target_link_libraries(decode_to_wav tinydap_player)
+
+add_executable(stack_check stack_check.c)
+target_link_libraries(stack_check tinydap_player Threads::Threads)
+
+# Optional: cmake -DTINYDAP_TEST_FLAC=/path/to/file.flac to run the
+# stack check under ctest (no audio files are kept in the repo).
+if(TINYDAP_TEST_FLAC)
+    add_test(NAME decoder_stack COMMAND stack_check ${TINYDAP_TEST_FLAC})
+endif()

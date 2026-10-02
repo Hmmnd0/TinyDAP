@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "tinydap/audio_sink.h"
 #include "tinydap/player_status.h"
@@ -18,3 +19,12 @@ void player_play(const char *path);
 void player_toggle_pause(void);
 void player_stop(void);
 void player_get_status(player_status_t *out);
+
+/* Cumulative decoder load counters; compare two snapshots. */
+typedef struct {
+    uint32_t busy_us;   /* time spent decoding, including storage reads */
+    uint32_t read_us;   /* time spent reading storage */
+    uint32_t frames;    /* frames decoded */
+} player_perf_t;
+
+void player_get_perf(player_perf_t *out);

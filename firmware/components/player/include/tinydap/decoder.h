@@ -38,4 +38,7 @@ decoder_t *decoder_open(const char *path, decoder_info_t *info, const char **err
  * 0 means end of stream or error. */
 size_t decoder_read(decoder_t *d, int16_t *out, size_t frames);
 
+/* Cumulative time spent reading the file (storage), for load measurement. */
+uint64_t decoder_read_time_us(const decoder_t *d);
+
 void decoder_close(decoder_t *d);

@@ -30,7 +30,8 @@ firmware/
     ├── test_pcm_ring.c       unit + multithreaded stress tests
     ├── tone_to_wav.c         pipeline demo: tone -> ring -> WAV file
     ├── ui_demo.c             drives the UI on a real folder, saves BMP screens
-    └── decode_to_wav.c       decodes a file with TinyDAP's decoders, for reference checks
+    ├── decode_to_wav.c       decodes a file with TinyDAP's decoders, for reference checks
+    └── stack_check.c         measures decoder peak stack use against a budget
 ```
 
 This follows the platform split in write-up §20: everything in
@@ -46,9 +47,11 @@ tags) and WAV files (16/24-bit, mono/stereo, 8–96 kHz; I2S retunes per
 track) through I2S → ES8311 → 3.5 mm jack, with auto-advance through the
 folder. FLAC output is verified bit-identical to macOS `afconvert` on the
 host (`host/build/decode_to_wav`). Stereo is folded to mono for the ES8311.
-Verified on hardware with 0 underruns. Every 5 s the `stats` task logs
-state, ring fill, underruns, and free internal heap; every 30 s, per-task
-stack headroom.
+Verified on hardware with 0 underruns up to 24-bit/96 kHz FLAC. Every 5 s
+the `stats` task logs state, ring fill, underruns, decoder load (total and
+SD-read share, and speed vs real time), and free internal heap; every 30 s,
+per-task stack headroom. Results are tracked in
+[docs/Stage0_Findings.md](../docs/Stage0_Findings.md).
 
 Next: MP3 with minimp3.
 

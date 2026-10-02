@@ -14,6 +14,7 @@
 #include "driver/i2c_master.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "board_cardputer_adv.h"
 #include "display.h"
@@ -133,16 +134,40 @@ static void ui_task(void *arg)
     }
 }
 
-/* Logs the §18 "What to measure" numbers available so far. */
+/*
+ * Logs the §18 "What to measure" numbers. Decoder load is the share of wall
+ * time spent decoding (and, within that, reading storage); "x realtime" is
+ * how many times faster than playback the decoder runs while busy.
+ */
 static void stats_task(void *arg)
 {
     static char tasks[1024];
+    player_perf_t prev;
+    player_get_perf(&prev);
+    int64_t prev_us = esp_timer_get_time();
+
     for (int n = 0;; n++) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         player_status_t st;
+        player_perf_t perf;
         player_get_status(&st);
-        ESP_LOGI(TAG, "state %d  pcm fill %u%%  underruns %u  internal heap free %u (min %u)",
-                 st.state, st.buffer_pct, (unsigned)st.underruns,
+        player_get_perf(&perf);
+        int64_t now = esp_timer_get_time();
+
+        uint32_t wall = (uint32_t)(now - prev_us);
+        uint32_t busy = perf.busy_us - prev.busy_us;
+        uint32_t read = perf.read_us - prev.read_us;
+        uint32_t frames = perf.frames - prev.frames;
+        prev = perf;
+        prev_us = now;
+
+        unsigned load = wall ? (unsigned)((uint64_t)busy * 100 / wall) : 0;
+        unsigned sd = wall ? (unsigned)((uint64_t)read * 100 / wall) : 0;
+        unsigned rt10 = (busy && st.fmt.sample_rate)
+            ? (unsigned)((uint64_t)frames * 10000000ull / st.fmt.sample_rate / busy) : 0;
+
+        ESP_LOGI(TAG, "state %d  pcm fill %u%%  underruns %u  decode %u%% (sd %u%%) x%u.%u realtime  heap %u (min %u)",
+                 st.state, st.buffer_pct, (unsigned)st.underruns, load, sd, rt10 / 10, rt10 % 10,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
         if (n % 6 == 0) {

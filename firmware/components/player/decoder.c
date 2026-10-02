@@ -5,23 +5,48 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "third_party/dr_flac.h"
 #include "tinydap/wav.h"
 
 typedef enum { DEC_WAV, DEC_FLAC } dec_kind_t;
 
+/*
+ * FLAC file reads go through a heap read-ahead buffer so each storage read
+ * is one large multi-sector transfer, while dr_flac keeps its default 4 KB
+ * cache. (Raising DR_FLAC_BUFFER_SIZE instead overflows the decoder stack:
+ * dr_flac builds that cache on the stack while opening a file.)
+ */
+#define READ_AHEAD_BYTES (16 * 1024)
+
 struct decoder {
     dec_kind_t kind;
     uint8_t channels;
+    uint64_t read_us;           /* time spent reading the file */
     /* WAV */
     FILE *file;
     uint8_t bytes_per_sample;
     uint32_t frames_left;
-    uint8_t in[DECODER_MAX_FRAMES * 2 * 3];
     /* FLAC */
     drflac *flac;
+    int fd;
+    size_t rpos, rlen;          /* unread window of rbuf */
+    track_tags_t *tags_out;     /* only valid during open */
+    union {
+        uint8_t in[DECODER_MAX_FRAMES * 2 * 3];  /* WAV conversion input */
+        uint8_t rbuf[READ_AHEAD_BYTES];          /* FLAC read-ahead */
+    };
 };
+
+static uint64_t now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
 
 static const char *extension(const char *path)
 {
@@ -88,7 +113,9 @@ static size_t wav_read(decoder_t *d, int16_t *out, size_t frames)
     if (frames > d->frames_left) {
         frames = d->frames_left;
     }
+    uint64_t t0 = now_us();
     size_t got = frames ? fread(d->in, 1, frames * in_frame, d->file) / in_frame : 0;
+    d->read_us += now_us() - t0;
     d->frames_left -= (uint32_t)got;
 
     const int off = bytes - 2;  /* little-endian; for 24-bit keep the top 16 bits */
@@ -113,12 +140,84 @@ static void copy_tag(char *dst, size_t n, const char *val, size_t len)
     dst[len] = '\0';
 }
 
+static size_t flac_on_read(void *user, void *buf, size_t n)
+{
+    decoder_t *d = user;
+    uint8_t *out = buf;
+    size_t done = 0;
+    uint64_t t0 = now_us();
+
+    while (done < n) {
+        if (d->rpos == d->rlen) {
+            if (n - done >= READ_AHEAD_BYTES) {
+                /* Large request: read straight into the caller's buffer. */
+                ssize_t r = read(d->fd, out + done, n - done);
+                if (r <= 0) {
+                    break;
+                }
+                done += (size_t)r;
+                continue;
+            }
+            ssize_t r = read(d->fd, d->rbuf, READ_AHEAD_BYTES);
+            if (r <= 0) {
+                break;
+            }
+            d->rpos = 0;
+            d->rlen = (size_t)r;
+        }
+        size_t take = d->rlen - d->rpos;
+        if (take > n - done) {
+            take = n - done;
+        }
+        memcpy(out + done, d->rbuf + d->rpos, take);
+        d->rpos += take;
+        done += take;
+    }
+    d->read_us += now_us() - t0;
+    return done;
+}
+
+/* Logical stream position: file position minus what's still buffered. */
+static off_t flac_logical_pos(decoder_t *d)
+{
+    off_t pos = lseek(d->fd, 0, SEEK_CUR);
+    return pos < 0 ? pos : pos - (off_t)(d->rlen - d->rpos);
+}
+
+static drflac_bool32 flac_on_seek(void *user, int offset, drflac_seek_origin origin)
+{
+    decoder_t *d = user;
+    if (origin == DRFLAC_SEEK_CUR) {
+        /* Stay inside the buffer when possible. */
+        long np = (long)d->rpos + offset;
+        if (np >= 0 && np <= (long)d->rlen) {
+            d->rpos = (size_t)np;
+            return DRFLAC_TRUE;
+        }
+        off_t target = flac_logical_pos(d) + offset;
+        d->rpos = d->rlen = 0;
+        return target >= 0 && lseek(d->fd, target, SEEK_SET) >= 0;
+    }
+    d->rpos = d->rlen = 0;
+    return lseek(d->fd, offset, origin == DRFLAC_SEEK_SET ? SEEK_SET : SEEK_END) >= 0;
+}
+
+static drflac_bool32 flac_on_tell(void *user, drflac_int64 *cursor)
+{
+    off_t pos = flac_logical_pos(user);
+    if (pos < 0) {
+        return DRFLAC_FALSE;
+    }
+    *cursor = pos;
+    return DRFLAC_TRUE;
+}
+
 static void flac_meta(void *user, drflac_metadata *m)
 {
     if (m->type != DRFLAC_METADATA_BLOCK_TYPE_VORBIS_COMMENT) {
         return;
     }
-    track_tags_t *tags = user;
+    track_tags_t *tags = ((decoder_t *)user)->tags_out;
     drflac_vorbis_comment_iterator it;
     drflac_init_vorbis_comment_iterator(&it, m->data.vorbis_comment.commentCount,
                                         m->data.vorbis_comment.pComments);
@@ -141,22 +240,32 @@ static void flac_meta(void *user, drflac_metadata *m)
 
 static decoder_t *flac_open_dec(const char *path, decoder_info_t *info, const char **err)
 {
-    drflac *flac = drflac_open_file_with_metadata(path, flac_meta, &info->tags, NULL);
+    decoder_t *d = calloc(1, sizeof *d);
+    if (!d) {
+        *err = "Out of memory";
+        return NULL;
+    }
+    d->fd = open(path, O_RDONLY);
+    if (d->fd < 0) {
+        *err = "Can't open file";
+        free(d);
+        return NULL;
+    }
+    d->tags_out = &info->tags;
+    drflac *flac = drflac_open_with_metadata(flac_on_read, flac_on_seek, flac_on_tell, flac_meta, d, NULL);
+    d->tags_out = NULL;
     if (!flac) {
         *err = "Can't decode FLAC";
+        close(d->fd);
+        free(d);
         return NULL;
     }
     audio_format_t fmt = { .sample_rate = flac->sampleRate, .bits_per_sample = flac->bitsPerSample,
                            .channels = flac->channels };
-    decoder_t *d = NULL;
-    if (supported_format(&fmt, err)) {
-        d = calloc(1, sizeof *d);
-        if (!d) {
-            *err = "Out of memory";
-        }
-    }
-    if (!d) {
+    if (!supported_format(&fmt, err)) {
         drflac_close(flac);
+        close(d->fd);
+        free(d);
         return NULL;
     }
     d->kind = DEC_FLAC;
@@ -208,6 +317,11 @@ size_t decoder_read(decoder_t *d, int16_t *out, size_t frames)
     return d->kind == DEC_FLAC ? flac_read(d, out, frames) : wav_read(d, out, frames);
 }
 
+uint64_t decoder_read_time_us(const decoder_t *d)
+{
+    return d ? d->read_us : 0;
+}
+
 void decoder_close(decoder_t *d)
 {
     if (!d) {
@@ -215,6 +329,7 @@ void decoder_close(decoder_t *d)
     }
     if (d->kind == DEC_FLAC) {
         drflac_close(d->flac);
+        close(d->fd);
     } else {
         fclose(d->file);
     }

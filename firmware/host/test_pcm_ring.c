@@ -85,6 +85,9 @@ static void *stress_producer(void *arg)
     uint32_t seed = 1, next = 0;
     while (next < STRESS_BYTES) {
         size_t want = 1 + lcg(&seed) % sizeof buf;
+        if (want > STRESS_BYTES - next) {
+            want = STRESS_BYTES - next;
+        }
         for (size_t i = 0; i < want; i++) {
             buf[i] = (uint8_t)(next + i);
         }
@@ -99,7 +102,11 @@ static void *stress_consumer(void *arg)
     uint8_t buf[1024];
     uint32_t seed = 2, next = 0;
     while (next < STRESS_BYTES) {
-        size_t n = pcm_ring_read(&s_stress, buf, 1 + lcg(&seed) % sizeof buf);
+        size_t want = 1 + lcg(&seed) % sizeof buf;
+        if (want > STRESS_BYTES - next) {
+            want = STRESS_BYTES - next;
+        }
+        size_t n = pcm_ring_read(&s_stress, buf, want);
         for (size_t i = 0; i < n; i++) {
             if (buf[i] != (uint8_t)(next + i)) {
                 (*errors)++;

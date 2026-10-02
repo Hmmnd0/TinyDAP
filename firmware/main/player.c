@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -15,7 +16,7 @@
 
 static const char *TAG = "player";
 
-#define PCM_RING_BYTES   (32 * 1024)     /* ~186 ms at 44.1 kHz/16/2 */
+#define PCM_RING_BYTES   (64 * 1024)     /* ~370 ms at 44.1 kHz, ~170 ms at 96 kHz */
 #define OUT_FRAME_BYTES  4               /* ring holds 16-bit stereo */
 #define OUT_CHUNK_FRAMES 256
 #define DECODE_FRAMES    DECODER_MAX_FRAMES
@@ -53,6 +54,11 @@ static SemaphoreHandle_t s_idle_ack;
 static atomic_bool s_eof;             /* current track fully decoded */
 static atomic_uint s_underruns;
 static atomic_uint s_frames_written;  /* frames into the ring this track */
+
+/* Decoder load counters (wrap after ~71 min; use deltas). */
+static atomic_uint s_busy_us;          /* time inside decoder_read */
+static atomic_uint s_read_us;          /* of which, reading storage */
+static atomic_uint s_frames_decoded;
 
 /* Decoder-task state */
 static decoder_t *s_dec;
@@ -195,7 +201,12 @@ static void start_track(const char *path)
 /* Decodes a block into the ring, folding to mono if needed. */
 static void decode_chunk(void)
 {
+    int64_t t0 = esp_timer_get_time();
+    uint64_t r0 = decoder_read_time_us(s_dec);
     size_t got = decoder_read(s_dec, s_out, DECODE_FRAMES);
+    atomic_fetch_add(&s_busy_us, (unsigned)(esp_timer_get_time() - t0));
+    atomic_fetch_add(&s_read_us, (unsigned)(decoder_read_time_us(s_dec) - r0));
+    atomic_fetch_add(&s_frames_decoded, (unsigned)got);
     if (got == 0) {
         s_file_done = true;
         atomic_store(&s_eof, true);
@@ -307,4 +318,11 @@ void player_get_status(player_status_t *out)
     out->elapsed_frames = written > buffered ? written - buffered : 0;
     out->underruns = atomic_load(&s_underruns);
     out->buffer_pct = (uint8_t)(used * 100 / pcm_ring_capacity(&s_ring));
+}
+
+void player_get_perf(player_perf_t *out)
+{
+    out->busy_us = atomic_load(&s_busy_us);
+    out->read_us = atomic_load(&s_read_us);
+    out->frames = atomic_load(&s_frames_decoded);
 }
