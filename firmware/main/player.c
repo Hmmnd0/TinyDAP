@@ -26,7 +26,7 @@ static const char *TAG = "player";
 #define PRIO_AUDIO_OUT (configMAX_PRIORITIES - 2)
 #define PRIO_DECODER   (configMAX_PRIORITIES - 3)
 
-typedef enum { CMD_PLAY, CMD_TOGGLE_PAUSE, CMD_STOP } cmd_type_t;
+typedef enum { CMD_PLAY, CMD_TOGGLE_PAUSE, CMD_STOP, CMD_SET_NEXT } cmd_type_t;
 
 typedef struct {
     cmd_type_t type;
@@ -53,7 +53,12 @@ static SemaphoreHandle_t s_idle_ack;
 
 static atomic_bool s_eof;             /* current track fully decoded */
 static atomic_uint s_underruns;
-static atomic_uint s_frames_written;  /* frames into the ring this track */
+
+/* Elapsed time: frames ever written to the ring, and the value of that
+ * counter where the current track's first frame went in. With gapless
+ * playback the ring can still hold the previous track's tail. */
+static atomic_uint s_total_written;
+static atomic_uint s_track_start;
 
 /* Decoder load counters (wrap after ~71 min; use deltas). */
 static atomic_uint s_busy_us;          /* time inside decoder_read */
@@ -65,6 +70,8 @@ static decoder_t *s_dec;
 static bool s_file_done;
 static uint32_t s_sink_rate = 44100;
 static int16_t s_out[DECODE_FRAMES * 2];
+static char s_next_path[256];
+static bool s_has_next;
 
 /* ---------- audio output task ---------- */
 
@@ -146,14 +153,39 @@ static void stop_output_and_flush(void)
     out_stop();
     pcm_ring_reset(&s_ring);
     close_file();
-    atomic_store(&s_frames_written, 0);
+    atomic_store(&s_track_start, atomic_load(&s_total_written));
     atomic_store(&s_eof, false);
     s_file_done = false;
+}
+
+/* Diagnostics: an open can fail for lack of one contiguous block even when
+ * total free internal RAM looks ample. */
+static void log_open_failure(const char *path, const char *err)
+{
+    ESP_LOGW(TAG, "open failed: %s: %s (internal free %u, largest block %u)", path, err,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+}
+
+static void publish_track(const char *path, const decoder_info_t *info)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_status.fmt = info->fmt;
+    s_status.total_frames = info->total_frames;
+    snprintf(s_status.path, sizeof s_status.path, "%s", path);
+    snprintf(s_status.codec, sizeof s_status.codec, "%s", info->codec);
+    s_status.tags = info->tags;
+    s_status.state = PLAYER_PLAYING;
+    s_status.error[0] = '\0';
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "playing %s (%s %u Hz, %u-bit, %u ch)", path, info->codec,
+             (unsigned)info->fmt.sample_rate, info->fmt.bits_per_sample, info->fmt.channels);
 }
 
 static void start_track(const char *path)
 {
     stop_output_and_flush();
+    s_has_next = false;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_status.track_id++;
@@ -167,6 +199,9 @@ static void start_track(const char *path)
     const char *err = NULL;
     decoder_info_t info;
     decoder_t *dec = decoder_open(path, &info, &err);
+    if (!dec) {
+        log_open_failure(path, err);
+    }
 
     if (dec && info.fmt.sample_rate != s_sink_rate) {
         audio_format_t out = { .sample_rate = info.fmt.sample_rate, .bits_per_sample = 16, .channels = 2 };
@@ -185,17 +220,45 @@ static void start_track(const char *path)
     }
 
     s_dec = dec;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_status.fmt = info.fmt;
-    s_status.total_frames = info.total_frames;
-    snprintf(s_status.codec, sizeof s_status.codec, "%s", info.codec);
-    s_status.tags = info.tags;
-    s_status.state = PLAYER_PLAYING;
-    s_status.error[0] = '\0';
-    xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "playing %s (%s %u Hz, %u-bit, %u ch)", path, info.codec,
-             (unsigned)info.fmt.sample_rate, info.fmt.bits_per_sample, info.fmt.channels);
+    publish_track(path, &info);
     out_start();
+}
+
+/*
+ * Gapless: at the end of a file, open the queued next track and keep feeding
+ * the same ring without stopping output. Only when the sample rate matches;
+ * otherwise I2S has to be retuned and the normal end-of-track path runs.
+ *
+ * The finished decoder is closed *before* the next one opens: all of its
+ * audio is already in the ring (up to ~370 ms at 44.1 kHz), which covers the
+ * open, and it halves peak memory. Two FLAC decoders (~62 KB each) at once
+ * did not fit in the Cardputer's largest free internal block.
+ */
+static bool advance_gapless(void)
+{
+    if (!s_has_next) {
+        return false;
+    }
+    s_has_next = false;
+    close_file();
+    const char *err = NULL;
+    decoder_info_t info;
+    decoder_t *dec = decoder_open(s_next_path, &info, &err);
+    if (!dec) {
+        log_open_failure(s_next_path, err);
+        return false;
+    }
+    if (info.fmt.sample_rate != s_sink_rate) {
+        decoder_close(dec);
+        return false;
+    }
+    s_dec = dec;
+    atomic_store(&s_track_start, atomic_load(&s_total_written));
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_status.track_id++;
+    xSemaphoreGive(s_lock);
+    publish_track(s_next_path, &info);
+    return true;
 }
 
 /* Decodes a block into the ring, folding to mono if needed. */
@@ -208,6 +271,16 @@ static void decode_chunk(void)
     atomic_fetch_add(&s_read_us, (unsigned)(decoder_read_time_us(s_dec) - r0));
     atomic_fetch_add(&s_frames_decoded, (unsigned)got);
     if (got == 0) {
+        player_status_t st;
+        player_get_status(&st);
+        uint32_t decoded = atomic_load(&s_total_written) - atomic_load(&s_track_start);
+        if (decoded + 1152 < st.total_frames) {
+            ESP_LOGW(TAG, "early end: %u of %u frames decoded", (unsigned)decoded,
+                     (unsigned)st.total_frames);
+        }
+        if (advance_gapless()) {
+            return;
+        }
         s_file_done = true;
         atomic_store(&s_eof, true);
         return;
@@ -219,7 +292,7 @@ static void decode_chunk(void)
         }
     }
     pcm_ring_write(&s_ring, s_out, got * OUT_FRAME_BYTES);
-    atomic_fetch_add(&s_frames_written, (unsigned)got);
+    atomic_fetch_add(&s_total_written, (unsigned)got);
 }
 
 static void handle_command(const player_cmd_t *cmd)
@@ -243,7 +316,12 @@ static void handle_command(const player_cmd_t *cmd)
     }
     case CMD_STOP:
         stop_output_and_flush();
+        s_has_next = false;
         set_state(PLAYER_STOPPED, NULL);
+        break;
+    case CMD_SET_NEXT:
+        snprintf(s_next_path, sizeof s_next_path, "%s", cmd->path);
+        s_has_next = cmd->path[0] != '\0';
         break;
     }
 }
@@ -259,11 +337,13 @@ static void decoder_task(void *arg)
         }
         if (can_decode) {
             decode_chunk();
-        } else if (s_dec && s_file_done && pcm_ring_used(&s_ring) == 0) {
-            /* Everything decoded has been sent; let the DMA queue drain. */
+        } else if (s_file_done && pcm_ring_used(&s_ring) == 0) {
+            /* Everything decoded has been sent; let the DMA queue drain.
+             * (s_dec may already be closed by a failed gapless advance.) */
             vTaskDelay(pdMS_TO_TICKS(50));
             out_stop();
             close_file();
+            s_file_done = false;
             set_state(PLAYER_ENDED, NULL);
         }
     }
@@ -286,8 +366,9 @@ void player_start(audio_sink_t *sink, bool mono_downmix)
 
     BaseType_t ok = xTaskCreatePinnedToCore(audio_out_task, "audio_out", 4096, NULL,
                                             PRIO_AUDIO_OUT, NULL, CORE_AUDIO);
-    /* dr_flac decodes on the stack: ~7.2 KB measured for 16/44.1 FLAC. */
-    ok &= xTaskCreatePinnedToCore(decoder_task, "decoder", 16384, NULL, PRIO_DECODER, NULL, CORE_AUDIO);
+    /* Decoders work on the stack: dr_flac ~7.2 KB, minimp3 keeps a 16 KB
+     * scratch struct per decode call. */
+    ok &= xTaskCreatePinnedToCore(decoder_task, "decoder", 24576, NULL, PRIO_DECODER, NULL, CORE_AUDIO);
     configASSERT(ok == pdPASS);
 }
 
@@ -305,6 +386,7 @@ static void send(cmd_type_t type, const char *path)
 void player_play(const char *path) { send(CMD_PLAY, path); }
 void player_toggle_pause(void) { send(CMD_TOGGLE_PAUSE, NULL); }
 void player_stop(void) { send(CMD_STOP, NULL); }
+void player_set_next(const char *path) { send(CMD_SET_NEXT, path); }
 
 void player_get_status(player_status_t *out)
 {
@@ -313,9 +395,10 @@ void player_get_status(player_status_t *out)
     xSemaphoreGive(s_lock);
 
     size_t used = pcm_ring_used(&s_ring);
-    uint32_t written = atomic_load(&s_frames_written);
-    uint32_t buffered = (uint32_t)(used / OUT_FRAME_BYTES);
-    out->elapsed_frames = written > buffered ? written - buffered : 0;
+    uint32_t played = atomic_load(&s_total_written) - (uint32_t)(used / OUT_FRAME_BYTES);
+    uint32_t start = atomic_load(&s_track_start);
+    /* Negative while the previous track's tail is still playing. */
+    out->elapsed_frames = (int32_t)(played - start) > 0 ? played - start : 0;
     out->underruns = atomic_load(&s_underruns);
     out->buffer_pct = (uint8_t)(used * 100 / pcm_ring_capacity(&s_ring));
 }

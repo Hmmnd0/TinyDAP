@@ -6,6 +6,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "tinydap/decoder.h"
 #include "wav_sink.h"
@@ -43,5 +44,9 @@ int main(int argc, char **argv)
     printf("%s %u Hz %u-bit %u ch, %zu/%u frames | %s / %s / %s\n", info.codec,
            (unsigned)info.fmt.sample_rate, info.fmt.bits_per_sample, info.fmt.channels, total,
            (unsigned)info.total_frames, info.tags.artist, info.tags.album, info.tags.title);
-    return total == info.total_frames ? 0 : 2;
+    /* MP3 lengths come from Xing headers or a CBR estimate; encoders differ
+     * on whether the header frame is counted, so allow one MP3 frame. */
+    long diff = (long)total - (long)info.total_frames;
+    long slack = strcmp(info.codec, "MP3") == 0 ? 1152 : 0;
+    return (diff >= -slack && diff <= slack) ? 0 : 2;
 }

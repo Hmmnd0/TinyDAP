@@ -6,7 +6,8 @@
  * first appearing as a stack-overflow panic on the ESP32.
  *
  * Host frames differ from Xtensa, so treat the number as an estimate; the
- * default budget (12 KB) leaves margin inside the 16 KB decoder task.
+ * default budget (20 KB) leaves margin inside the 24 KB decoder task
+ * (minimp3 alone keeps a 16 KB scratch struct on the stack).
  *
  * Usage: stack_check <file> [budget-bytes]
  */
@@ -42,7 +43,10 @@ static void *run(void *arg)
         total += n;
     }
     decoder_close(d);
-    s_result = total == info.total_frames ? 0 : 2;
+    /* MP3 lengths may be off by one frame (see decode_to_wav). */
+    long diff = (long)total - (long)info.total_frames;
+    long slack = strcmp(info.codec, "MP3") == 0 ? 1152 : 0;
+    s_result = (diff >= -slack && diff <= slack) ? 0 : 2;
     return NULL;
 }
 
@@ -53,7 +57,7 @@ int main(int argc, char **argv)
         return 1;
     }
     s_path = argv[1];
-    size_t budget = argc > 2 ? strtoul(argv[2], NULL, 0) : 12 * 1024;
+    size_t budget = argc > 2 ? strtoul(argv[2], NULL, 0) : 20 * 1024;
 
     uint8_t *stack = aligned_alloc(16384, STACK_BYTES);
     if (!stack) {

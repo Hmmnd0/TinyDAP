@@ -18,6 +18,7 @@ void player_start(audio_sink_t *sink, bool mono_downmix);
 void player_play(const char *path);
 void player_toggle_pause(void);
 void player_stop(void);
+void player_set_next(const char *path);   /* NULL clears */
 void player_get_status(player_status_t *out);
 
 /* Cumulative decoder load counters; compare two snapshots. */

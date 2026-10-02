@@ -14,6 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
+| 2026-10-02 | MP3 (minimp3, ID3v2 tags), gapless playback, folder repeat | *this commit* |
 | 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | `e241123` |
 | 2026-10-02 | 24/96 FLAC first test: short run clean, then 503 underruns on continued play | `29548a9` |
 | 2026-10-02 | FLAC playback (dr_flac), tags on Now Playing | `574ae93` |
@@ -92,6 +93,45 @@ for the ring to be half full, which FLAC fills in a few milliseconds.
   SPI-mode number; the write-up's 4-bit SDMMC (§9) should cut it sharply,
   and the read-ahead buffer can move to PSRAM.
 
+### Gapless playback
+
+When a file ends, the decoder opens the queued next track and keeps feeding
+the same PCM ring without stopping output (same sample rate only; a rate
+change needs an I2S retune and takes the normal stop/start path).
+
+| Transition | Result | Notes |
+|---|---|---|
+| WAV 48 kHz → WAV 48 kHz (Chip Rack T1 → T2) | Gapless, 0 underruns | Old and new decoder briefly coexisted; heap min dipped to 102 KB |
+| FLAC → FLAC, old decoder still open during the next open | **Failed**: "Can't decode FLAC", fell back to a ~0.4 s gap | Two dr_flac decoders (~62 KB each with read-ahead) didn't fit the largest free block; heap min dipped to 56 KB |
+| FLAC → FLAC (06 Nightvision → 07 Superheroes), old decoder closed first | **Gapless, 0 underruns** | Heap min unchanged at 73.9 KB |
+
+**Finding:** "free heap" is a sum across separate internal RAM regions
+(269 KB, 21 KB, 32 KB); a ~45 KB allocation needs one contiguous block, so
+82 KB free was not enough for a second FLAC decoder. Fix: at end of file
+all decoded audio is already in the ring (~370 ms at 44.1 kHz), so the
+finished decoder is closed *before* opening the next. This covers the open
+time and halves peak memory. The open-failure log now prints the largest
+free block.
+
+### SD clock
+
+| SPI clock | Result |
+|---|---|
+| 40 MHz | **Mount fails** (`ESP_ERR_INVALID_RESPONSE`): the card rejects high-speed mode over SPI |
+| 20 MHz | Works (SD default speed; ESP32 divider's next step, 26.7 MHz, is also above the 25 MHz default-speed limit) |
+
+20 MHz is the ceiling for SPI mode on this card, so SPI-mode SD cost can't
+be reduced by clocking. Faster storage needs 4-bit SDMMC (write-up §9).
+
+### MP3 (minimp3)
+
+Host results on 23 real MP3s (Deftones *Eros*, OHMS, Crest; 44.1 kHz,
+stereo): all decode fully; durations match macOS `afinfo`. ID3v2.3/2.4
+TIT2/TPE1/TALB tags read. Track length comes from the Xing/Info header
+(or a CBR estimate); encoders disagree by one frame (26 ms) on whether the
+header frame is counted. **On-device MP3 measurements pending** (files not
+yet on the card).
+
 ### Memory
 
 | State | Internal heap free | Min ever |
@@ -105,7 +145,14 @@ for the ring to be half full, which FLAC fills in a few milliseconds.
 | Idle, 64 KB ring | 146 KB | 137 KB |
 | FLAC 16/44.1 playing, 64 KB ring + 16 KB read-ahead | ~90 KB | 77 KB |
 | FLAC 24/96 playing, 64 KB ring + 16 KB read-ahead | 78–86 KB | 78 KB |
+| Idle, 24 KB decoder stack (for minimp3) | 137 KB | 129 KB |
+| FLAC 16/44.1 playing, 24 KB decoder stack | 74–82 KB | 74 KB |
 
+- **dr_flac reads embedded album art into RAM by default.** Each
+  *Discovery* FLAC carries a 183 KB PICTURE block; dr_flac tries to
+  malloc and read the whole image during open, seeking past it only if
+  the allocation fails. Built with `DR_FLAC_NO_PICTURE_METADATA_MALLOC` so
+  it always seeks past (no RAM spike, no 183 KB SD read at track start).
 - dr_flac uses **~45 KB of heap** per open 16/44.1 track and **~49 KB** for
   24/96 with 4608-frame blocks (decoded-block buffer sized by max block
   size × channels × 4 bytes, plus read buffer).
@@ -122,6 +169,7 @@ for the ring to be half full, which FLAC fills in a few milliseconds.
 |---|---|---|---|---|
 | decoder | 8 KB | 5.5 KB | **0.96 KB** | — |
 | decoder | 16 KB | — | 9.1 KB | 9.1 KB |
+| decoder | 24 KB | 21.1 KB | 16.6 KB | — |
 | audio_out | 4 KB | 3.3 KB | 3.3 KB | 3.3 KB |
 | ui | 8 KB | 4.5 KB | 4.5 KB | 4.5 KB |
 | input | 3 KB | 1.7 KB | 1.7 KB | 1.7 KB |
@@ -137,8 +185,14 @@ check panicked and rebooted the device. Host tests passed because macOS
 threads have 8 MB stacks. Fixed by keeping dr_flac's default 4 KB cache and
 doing read-ahead in our own heap buffer.
 
+**minimp3 keeps a 16.2 KB scratch struct on the stack** in every
+`mp3dec_decode_frame` call. Host peak for MP3 decoding: 19.7 KB (FLAC
+6.3 KB, WAV 1.5 KB). The decoder task was raised to 24 KB (+8 KB RAM,
+cheaper than a 16 KB static scratch buffer) and the stack-check budget to
+20 KB. On-device MP3 stack headroom still to be measured.
+
 **Guard:** `host/stack_check` runs a decode on a pattern-filled thread stack
-and reports peak use against a 12 KB budget (FreeRTOS high-water-mark
+and reports peak use against a budget (now 20 KB) (FreeRTOS high-water-mark
 style). Current decoder: ~5.9 KB on the host (~7.2 KB measured on device).
 The bad 16 KB setting reports 18.2 KB and fails. Run it under ctest with
 `cmake -DTINYDAP_TEST_FLAC=<file.flac>`.
@@ -221,7 +275,11 @@ The bad 16 KB setting reports 18.2 KB and fails. Run it under ctest with
 - [x] ES8311 at 96 kHz (internal MCLK 24.576 MHz) — works
 - [x] Raise PCM ring to 64 KB and re-measure 24/96 fill levels (84–98%)
 - [x] Measure decoder load: now logged every 5 s (decode %, SD %, x realtime)
-- [ ] Try a faster SD SPI clock (currently 20 MHz) and compare SD %
+- [x] Try a faster SD SPI clock: 40 MHz fails to mount; 20 MHz is the SPI-mode ceiling
+- [x] Gapless playback (same sample rate): WAV and FLAC verified
+- [x] Folder repeat (`r`)
+- [ ] MP3 on device: decode load, stack headroom, tags
+- [ ] Overnight soak with repeat on (multi-hour stability)
 - [ ] Real hi-res source material (e.g. 2L test bench) vs upsampled files
 - [ ] PCM5102A on the external I2S port: stereo, 24-bit output
 - [ ] MP3 via minimp3

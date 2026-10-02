@@ -25,8 +25,6 @@ bool sdcard_mount(void)
         return false;
     }
 
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = BOARD_SD_SPI_HOST;
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.gpio_cs = BOARD_SD_CS;
     slot.host_id = BOARD_SD_SPI_HOST;
@@ -36,13 +34,22 @@ bool sdcard_mount(void)
         .allocation_unit_size = 16 * 1024,
     };
 
+    /* 20 MHz (SD default speed). Stage 0 tested 40 MHz: the card rejects
+     * high-speed mode over SPI (ESP_ERR_INVALID_RESPONSE), and the next
+     * clock step, 26.7 MHz, is also above the 25 MHz default-speed limit.
+     * Faster storage needs 4-bit SDMMC (Stage 1 / Rev A). */
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = BOARD_SD_SPI_HOST;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+
     sdmmc_card_t *card;
     err = esp_vfs_fat_sdspi_mount(SDCARD_MOUNT, &host, &slot, &mount, &card);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mount failed: %s (card must be FAT32)", esp_err_to_name(err));
         return false;
     }
-    ESP_LOGI(TAG, "mounted %s, %llu MB", card->cid.name,
-             (unsigned long long)card->csd.capacity * card->csd.sector_size / (1024 * 1024));
+    ESP_LOGI(TAG, "mounted %s, %llu MB, SPI clock %d kHz", card->cid.name,
+             (unsigned long long)card->csd.capacity * card->csd.sector_size / (1024 * 1024),
+             card->real_freq_khz);
     return true;
 }

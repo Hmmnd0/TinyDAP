@@ -5,6 +5,7 @@
  * Usage: ui_demo <music-root> <out-dir> [keys]
  *   keys: u=up d=down s=select b=back p=play/pause n=next r=prev
  *         +=vol up -=vol down v=view toggle e=end current track
+ *         t=repeat toggle
  */
 
 #include <stdio.h>
@@ -60,6 +61,12 @@ static void fake_volume(void *ctx, int db)
     (void)db;
 }
 
+static void fake_set_next(void *ctx, const char *path)
+{
+    (void)ctx;
+    printf("next: %s\n", path ? path : "(none)");
+}
+
 static void put32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
 static void put16(FILE *f, uint16_t v) { fwrite(&v, 2, 1, f); }
 
@@ -108,7 +115,7 @@ int main(int argc, char **argv)
     const char *keys = argc > 3 ? argv[3] : "";
 
     static ui_app_t app;
-    player_ops_t ops = { fake_play, fake_toggle, fake_stop, fake_volume, NULL };
+    player_ops_t ops = { fake_play, fake_toggle, fake_stop, fake_volume, fake_set_next, NULL };
     ui_app_init(&app, argv[1], true, &ops, -12);
 
     static fb_t fb;
@@ -136,6 +143,7 @@ int main(int argc, char **argv)
         case '+': in = UI_VOL_UP; break;
         case '-': in = UI_VOL_DOWN; break;
         case 'v': in = UI_VIEW_TOGGLE; break;
+        case 't': in = UI_REPEAT; break;
         case 'e': s_st.state = PLAYER_ENDED; now += 5000; continue;
         default: continue;
         }

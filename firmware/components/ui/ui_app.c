@@ -49,7 +49,38 @@ static bool load_folder(ui_app_t *app, const char *path, uint32_t now_ms)
 
 static bool playable(entry_kind_t k)
 {
-    return k == ENTRY_WAV || k == ENTRY_FLAC;
+    return k == ENTRY_WAV || k == ENTRY_FLAC || k == ENTRY_MP3;
+}
+
+/* Next/previous playable entry in the playing folder, or -1. Forward
+ * wraps to the first track when repeat is on. */
+static int queue_step(const ui_app_t *app, int from, int dir)
+{
+    for (int i = from + dir; i >= 0 && i < app->queue.count; i += dir) {
+        if (playable(browser_kind(&app->queue, i))) {
+            return i;
+        }
+    }
+    if (dir > 0 && app->repeat) {
+        for (int i = 0; i <= from && i < app->queue.count; i++) {
+            if (playable(browser_kind(&app->queue, i))) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+/* Tells the player what follows the current track, for gapless playback. */
+static void queue_next_for_gapless(ui_app_t *app)
+{
+    char path[BROWSER_PATH_MAX + 128];
+    int i = queue_step(app, app->queue_pos, +1);
+    if (i >= 0 && browser_entry_path(&app->queue, i, path, sizeof path)) {
+        app->ops.set_next(app->ops.ctx, path);
+    } else {
+        app->ops.set_next(app->ops.ctx, NULL);
+    }
 }
 
 static void play_queue_entry(ui_app_t *app)
@@ -63,20 +94,19 @@ static void play_queue_entry(ui_app_t *app)
 /* Moves to the next/previous playable track in the playing folder. */
 static bool play_relative(ui_app_t *app, int dir)
 {
-    for (int i = app->queue_pos + dir; i >= 0 && i < app->queue.count; i += dir) {
-        if (playable(browser_kind(&app->queue, i))) {
-            app->queue_pos = i;
-            play_queue_entry(app);
-            return true;
-        }
+    int i = queue_step(app, app->queue_pos, dir);
+    if (i < 0) {
+        return false;
     }
-    return false;
+    app->queue_pos = i;
+    play_queue_entry(app);
+    return true;
 }
 
 static void play_from_browser(ui_app_t *app, uint32_t now_ms)
 {
     if (!playable(browser_kind(&app->browse, app->cursor))) {
-        show_message(app, "MP3 not supported yet", now_ms);
+        show_message(app, "Can't play this file", now_ms);
         return;
     }
     memcpy(&app->queue, &app->browse, sizeof app->queue);
@@ -195,6 +225,13 @@ void ui_app_input(ui_app_t *app, ui_input_t in, const player_status_t *st, uint3
         show_message(app, msg, now_ms);
         return;
     }
+    case UI_REPEAT:
+        app->repeat = !app->repeat;
+        show_message(app, app->repeat ? "Repeat on" : "Repeat off", now_ms);
+        if (app->queue_valid) {
+            queue_next_for_gapless(app);
+        }
+        return;
     default:
         break;
     }
@@ -211,6 +248,22 @@ void ui_app_input(ui_app_t *app, ui_input_t in, const player_status_t *st, uint3
 void ui_app_tick(ui_app_t *app, const player_status_t *st, uint32_t now_ms)
 {
     (void)now_ms;
+
+    /* A track started, by request or by gapless advance: follow it in the
+     * queue and tell the player what comes next. */
+    if (st->track_id != app->seen_track_id && st->state == PLAYER_PLAYING) {
+        app->seen_track_id = st->track_id;
+        size_t dir_len = strlen(app->queue.path);
+        if (app->queue_valid && strncmp(st->path, app->queue.path, dir_len) == 0 &&
+            st->path[dir_len] == '/') {
+            int i = browser_find(&app->queue, base_name(st->path));
+            if (i >= 0) {
+                app->queue_pos = i;
+            }
+            queue_next_for_gapless(app);
+        }
+    }
+
     if (st->state == PLAYER_ENDED && app->queue_valid && st->track_id != app->handled_track_id) {
         app->handled_track_id = st->track_id;
         if (!play_relative(app, +1)) {
@@ -330,7 +383,7 @@ static void render_now_playing(const ui_app_t *app, fb_t *fb, const player_statu
                 }
             }
         }
-        snprintf(right, sizeof right, "%d/%d", pos, total);
+        snprintf(right, sizeof right, app->repeat ? "R %d/%d" : "%d/%d", pos, total);
     }
     draw_header(fb, "Now Playing", right, st);
 

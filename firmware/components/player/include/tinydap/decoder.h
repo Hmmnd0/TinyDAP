@@ -18,8 +18,8 @@ typedef struct {
 
 typedef struct {
     audio_format_t fmt;      /* source format */
-    uint32_t total_frames;
-    const char *codec;       /* "WAV", "FLAC" */
+    uint32_t total_frames;   /* MP3 without a Xing header: CBR estimate */
+    const char *codec;       /* "WAV", "FLAC", "MP3" */
     track_tags_t tags;       /* empty strings when absent */
 } decoder_info_t;
 

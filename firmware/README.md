@@ -18,8 +18,8 @@ firmware/
 ├── components/
 │   ├── player/               portable core — no ESP-IDF dependencies
 │   │   ├── pcm_ring.c        lock-free SPSC PCM ring buffer
-│   │   ├── decoder.c         WAV/FLAC decoders behind one interface
-│   │   ├── third_party/      dr_flac.h (public domain / MIT-0)
+│   │   ├── decoder.c         WAV/FLAC/MP3 decoders behind one interface
+│   │   ├── third_party/      dr_flac.h, minimp3.h (public domain)
 │   │   ├── wav.c             WAV header parser
 │   │   ├── browser.c         folder listing, natural sort
 │   │   └── tone.c            test-tone generator
@@ -42,10 +42,10 @@ draws the final 128x64 OLED layout; on the Cardputer it is scaled onto the
 
 ## Current state
 
-Browses the microSD card and plays FLAC (dr_flac, with title/artist/album
-tags) and WAV files (16/24-bit, mono/stereo, 8–96 kHz; I2S retunes per
-track) through I2S → ES8311 → 3.5 mm jack, with auto-advance through the
-folder. FLAC output is verified bit-identical to macOS `afconvert` on the
+Browses the microSD card and plays FLAC (dr_flac) and MP3 (minimp3) with
+title/artist/album tags, and WAV files (16/24-bit, mono/stereo, 8–96 kHz; I2S retunes per
+track) through I2S → ES8311 → 3.5 mm jack, with gapless auto-advance
+through the folder and optional folder repeat. FLAC output is verified bit-identical to macOS `afconvert` on the
 host (`host/build/decode_to_wav`). Stereo is folded to mono for the ES8311.
 Verified on hardware with 0 underruns up to 24-bit/96 kHz FLAC. Every 5 s
 the `stats` task logs state, ring fill, underruns, decoder load (total and
@@ -53,7 +53,7 @@ SD-read share, and speed vs real time), and free internal heap; every 30 s,
 per-task stack headroom. Results are tracked in
 [docs/Stage0_Findings.md](../docs/Stage0_Findings.md).
 
-Next: MP3 with minimp3.
+Next: on-device MP3 measurements and an overnight soak test.
 
 ### Controls (Cardputer-Adv)
 
@@ -66,12 +66,14 @@ Next: MP3 with minimp3.
 | `n` / `b` | Next / previous track |
 | `=` / `-` | Volume up / down |
 | `m` | Browser ↔ Now Playing |
+| `r` | Folder repeat on/off |
 
 ### Preparing an SD card
 
-FAT32 only (exFAT is disabled in ESP-IDF's FatFs). Convert music to WAV
-with `../tools/to_wav.sh <source> <dest>` (macOS `afconvert`, 16-bit
-44.1 kHz, keeps folder structure), copy to the card, then remove macOS
+FAT32 only (exFAT is disabled in ESP-IDF's FatFs). FLAC, MP3, and WAV play
+directly; other formats can be converted with `../tools/to_wav.sh
+<source> <dest>` (macOS `afconvert`, 16-bit 44.1 kHz WAV, keeps folder
+structure). Copy to the card, then remove macOS
 `._*` files from the copied folders.
 
 ## ESP32 build

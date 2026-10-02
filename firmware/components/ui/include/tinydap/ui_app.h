@@ -23,6 +23,7 @@ typedef enum {
     UI_VOL_UP,
     UI_VOL_DOWN,
     UI_VIEW_TOGGLE,
+    UI_REPEAT,          /* toggle folder repeat */
 } ui_input_t;
 
 typedef enum {
@@ -42,7 +43,9 @@ typedef struct {
     browser_t queue;        /* folder that's playing */
     int queue_pos;          /* entry index in queue */
     bool queue_valid;
-    uint32_t handled_track_id;
+    bool repeat;                /* wrap to the folder's first track */
+    uint32_t handled_track_id;  /* last ENDED event acted on */
+    uint32_t seen_track_id;     /* last track start seen (incl. gapless) */
 
     ui_view_t view;
     int volume_db;

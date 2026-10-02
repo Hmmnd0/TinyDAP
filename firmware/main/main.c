@@ -53,6 +53,7 @@ static void ops_play(void *ctx, const char *path) { player_play(path); }
 static void ops_toggle_pause(void *ctx) { player_toggle_pause(); }
 static void ops_stop(void *ctx) { player_stop(); }
 static void ops_volume(void *ctx, int db) { es8311_set_volume_db(db); }
+static void ops_set_next(void *ctx, const char *path) { player_set_next(path); }
 
 /* ---------- input: Cardputer keys -> UI events ---------- */
 
@@ -73,6 +74,7 @@ static bool map_key(char key, ui_input_t *out)
     case '=': *out = UI_VOL_UP; return true;
     case '-': *out = UI_VOL_DOWN; return true;
     case 'm': *out = UI_VIEW_TOGGLE; return true;
+    case 'r': *out = UI_REPEAT; return true;
     default: return false;
     }
 }
@@ -212,7 +214,7 @@ void app_main(void)
     player_start(sink, true);
 
     s_inputs = xQueueCreate(16, sizeof(ui_input_t));
-    player_ops_t ops = { ops_play, ops_toggle_pause, ops_stop, ops_volume, NULL };
+    player_ops_t ops = { ops_play, ops_toggle_pause, ops_stop, ops_volume, ops_set_next, NULL };
     ui_app_init(&s_app, SDCARD_MOUNT, sd_ok, &ops, DEFAULT_VOLUME_DB);
 
     xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, PRIO_INPUT, NULL, CORE_SYSTEM);

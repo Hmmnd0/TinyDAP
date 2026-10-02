@@ -5,14 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "third_party/dr_flac.h"
+#include "third_party/minimp3.h"
 #include "tinydap/wav.h"
 
-typedef enum { DEC_WAV, DEC_FLAC } dec_kind_t;
+typedef enum { DEC_WAV, DEC_FLAC, DEC_MP3 } dec_kind_t;
 
 /*
  * FLAC file reads go through a heap read-ahead buffer so each storage read
@@ -22,6 +24,19 @@ typedef enum { DEC_WAV, DEC_FLAC } dec_kind_t;
  */
 #define READ_AHEAD_BYTES (16 * 1024)
 
+/* MP3: refill the input window when less than this is buffered (several
+ * maximum-size frames), so the decoder always sees whole frames. */
+#define MP3_REFILL_BELOW 4096
+
+typedef struct {
+    mp3dec_t dec;
+    int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    size_t pcm_pos, pcm_len;    /* frames of the current decoded block */
+    int channels;               /* of the current block */
+    size_t in_pos, in_len;      /* undecoded window of rbuf */
+    bool eof;
+} mp3_state_t;
+
 struct decoder {
     dec_kind_t kind;
     uint8_t channels;
@@ -30,14 +45,15 @@ struct decoder {
     FILE *file;
     uint8_t bytes_per_sample;
     uint32_t frames_left;
-    /* FLAC */
+    /* FLAC and MP3 */
     drflac *flac;
+    mp3_state_t *mp3;
     int fd;
     size_t rpos, rlen;          /* unread window of rbuf */
     track_tags_t *tags_out;     /* only valid during open */
     union {
         uint8_t in[DECODER_MAX_FRAMES * 2 * 3];  /* WAV conversion input */
-        uint8_t rbuf[READ_AHEAD_BYTES];          /* FLAC read-ahead */
+        uint8_t rbuf[READ_AHEAD_BYTES];          /* FLAC read-ahead / MP3 input */
     };
 };
 
@@ -57,7 +73,8 @@ static const char *extension(const char *path)
 int decoder_supports(const char *path)
 {
     const char *ext = extension(path);
-    return strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".flac") == 0;
+    return strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".flac") == 0 ||
+           strcasecmp(ext, ".mp3") == 0;
 }
 
 static bool supported_format(const audio_format_t *f, const char **err)
@@ -159,6 +176,9 @@ static size_t flac_on_read(void *user, void *buf, size_t n)
                 continue;
             }
             ssize_t r = read(d->fd, d->rbuf, READ_AHEAD_BYTES);
+            if (r < 0) {
+                fprintf(stderr, "decoder: read error %d (%s)\n", errno, strerror(errno));
+            }
             if (r <= 0) {
                 break;
             }
@@ -289,6 +309,272 @@ static size_t flac_read(decoder_t *d, int16_t *out, size_t frames)
     return got;
 }
 
+/* ---------- MP3 ---------- */
+
+static uint32_t be32(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static uint32_t syncsafe32(const uint8_t *p)
+{
+    return (uint32_t)(p[0] & 0x7F) << 21 | (uint32_t)(p[1] & 0x7F) << 14 |
+           (uint32_t)(p[2] & 0x7F) << 7 | (p[3] & 0x7F);
+}
+
+/* ID3v2 text frame -> ASCII ('?' for characters the 5x7 font can't show). */
+static void id3_text(char *dst, size_t n, const uint8_t *p, size_t len)
+{
+    size_t o = 0;
+    if (len > 0) {
+        uint8_t enc = p[0];
+        p++;
+        len--;
+        if (enc == 1 || enc == 2) {  /* UTF-16 with BOM / UTF-16BE */
+            bool be = enc == 2;
+            if (len >= 2 && p[0] == 0xFF && p[1] == 0xFE) {
+                be = false;
+                p += 2;
+                len -= 2;
+            } else if (len >= 2 && p[0] == 0xFE && p[1] == 0xFF) {
+                be = true;
+                p += 2;
+                len -= 2;
+            }
+            for (size_t i = 0; i + 1 < len && o < n - 1; i += 2) {
+                unsigned c = be ? (unsigned)(p[i] << 8 | p[i + 1]) : (unsigned)(p[i] | p[i + 1] << 8);
+                if (c == 0) {
+                    break;
+                }
+                dst[o++] = c < 0x80 ? (char)c : '?';
+            }
+        } else {  /* 0 = ISO-8859-1, 3 = UTF-8 */
+            for (size_t i = 0; i < len && o < n - 1; i++) {
+                uint8_t c = p[i];
+                if (c == 0) {
+                    break;
+                }
+                if (c < 0x80) {
+                    dst[o++] = (char)c;
+                } else if (enc != 3 || (c & 0xC0) != 0x80) {
+                    dst[o++] = '?';  /* UTF-8 continuation bytes are dropped */
+                }
+            }
+        }
+    }
+    dst[o] = '\0';
+}
+
+/* Reads title/artist/album from an ID3v2.3/2.4 tag and leaves the file at
+ * the first byte after the tag (or at 0 if there is none). */
+static void mp3_read_id3(decoder_t *d, track_tags_t *tags)
+{
+    uint8_t h[10];
+    if (read(d->fd, h, sizeof h) != (ssize_t)sizeof h || memcmp(h, "ID3", 3) != 0) {
+        lseek(d->fd, 0, SEEK_SET);
+        return;
+    }
+    const int ver = h[3];
+    const uint32_t body_end = 10 + syncsafe32(h + 6);
+    const off_t tag_end = (off_t)body_end + ((h[5] & 0x10) ? 10 : 0);
+
+    /* Skip frame parsing for unsynchronised or extended-header tags. */
+    if ((ver == 3 || ver == 4) && !(h[5] & 0xC0)) {
+        off_t pos = 10;
+        uint8_t fh[10];
+        while (pos + 10 <= (off_t)body_end && read(d->fd, fh, sizeof fh) == (ssize_t)sizeof fh &&
+               fh[0] != 0) {
+            uint32_t size = ver == 4 ? syncsafe32(fh + 4) : be32(fh + 4);
+            pos += 10;
+            char *dst = memcmp(fh, "TIT2", 4) == 0 ? tags->title
+                      : memcmp(fh, "TPE1", 4) == 0 ? tags->artist
+                      : memcmp(fh, "TALB", 4) == 0 ? tags->album : NULL;
+            uint8_t text[256];
+            if (dst && size > 1 && size <= sizeof text &&
+                read(d->fd, text, size) == (ssize_t)size) {
+                id3_text(dst, sizeof tags->title, text, size);
+            }
+            pos += size;
+            lseek(d->fd, pos, SEEK_SET);
+        }
+    }
+    lseek(d->fd, tag_end, SEEK_SET);
+}
+
+/* Compacts and refills the MP3 input window. */
+static void mp3_fill(decoder_t *d)
+{
+    mp3_state_t *m = d->mp3;
+    if (m->eof) {
+        return;
+    }
+    if (m->in_pos > 0) {
+        memmove(d->rbuf, d->rbuf + m->in_pos, m->in_len - m->in_pos);
+        m->in_len -= m->in_pos;
+        m->in_pos = 0;
+    }
+    uint64_t t0 = now_us();
+    ssize_t r = read(d->fd, d->rbuf + m->in_len, READ_AHEAD_BYTES - m->in_len);
+    d->read_us += now_us() - t0;
+    if (r <= 0) {
+        m->eof = true;
+    } else {
+        m->in_len += (size_t)r;
+    }
+}
+
+/* Decodes the next audio frame into m->pcm. Returns samples per channel,
+ * 0 at end of stream. *frame points at the frame's bytes (valid until the
+ * next call). */
+static int mp3_next_frame(decoder_t *d, mp3dec_frame_info_t *fi, const uint8_t **frame)
+{
+    mp3_state_t *m = d->mp3;
+    for (;;) {
+        if (m->in_len - m->in_pos < MP3_REFILL_BELOW) {
+            mp3_fill(d);
+        }
+        size_t avail = m->in_len - m->in_pos;
+        if (avail == 0) {
+            return 0;
+        }
+        int samples = mp3dec_decode_frame(&m->dec, d->rbuf + m->in_pos, (int)avail, m->pcm, fi);
+        if (fi->frame_bytes == 0) {
+            if (m->eof) {
+                return 0;
+            }
+            m->in_pos = m->in_len;  /* a full window with no frame: skip it */
+            continue;
+        }
+        if (frame) {
+            *frame = d->rbuf + m->in_pos + fi->frame_offset;
+        }
+        m->in_pos += (size_t)fi->frame_bytes;
+        if (samples > 0) {
+            return samples;
+        }
+    }
+}
+
+/* Frame count from a Xing/Info header in the first frame, if present. */
+static bool mp3_xing_frames(const uint8_t *f, int len, uint32_t *frames)
+{
+    if (len < 4) {
+        return false;
+    }
+    bool mpeg1 = ((f[1] >> 3) & 3) == 3;
+    bool mono = (f[3] >> 6) == 3;
+    int off = 4 + (mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17));
+    if (!(f[1] & 1)) {
+        off += 2;  /* CRC present */
+    }
+    if (off + 12 > len || (memcmp(f + off, "Xing", 4) != 0 && memcmp(f + off, "Info", 4) != 0)) {
+        return false;
+    }
+    if (!(be32(f + off + 4) & 1)) {
+        return false;
+    }
+    *frames = be32(f + off + 8);
+    return true;
+}
+
+static void mp3_free(decoder_t *d)
+{
+    if (d->fd >= 0) {
+        close(d->fd);
+    }
+    free(d->mp3);
+    free(d);
+}
+
+static decoder_t *mp3_open_dec(const char *path, decoder_info_t *info, const char **err)
+{
+    decoder_t *d = calloc(1, sizeof *d);
+    if (!d || !(d->mp3 = calloc(1, sizeof *d->mp3))) {
+        free(d);
+        *err = "Out of memory";
+        return NULL;
+    }
+    d->kind = DEC_MP3;
+    d->fd = open(path, O_RDONLY);
+    if (d->fd < 0) {
+        *err = "Can't open file";
+        mp3_free(d);
+        return NULL;
+    }
+    off_t file_size = lseek(d->fd, 0, SEEK_END);
+    lseek(d->fd, 0, SEEK_SET);
+    mp3_read_id3(d, &info->tags);
+    off_t audio_start = lseek(d->fd, 0, SEEK_CUR);
+
+    mp3_state_t *m = d->mp3;
+    mp3dec_init(&m->dec);
+    mp3dec_frame_info_t fi;
+    const uint8_t *frame = NULL;
+    int n = mp3_next_frame(d, &fi, &frame);
+    if (n <= 0) {
+        *err = "Can't decode MP3";
+        mp3_free(d);
+        return NULL;
+    }
+
+    uint32_t xing = 0;
+    if (mp3_xing_frames(frame, fi.frame_bytes, &xing)) {
+        info->total_frames = xing * (uint32_t)n;
+        m->pcm_len = 0;  /* the Xing/Info frame carries no audio */
+    } else {
+        m->pcm_len = (size_t)n;
+        if (fi.bitrate_kbps > 0 && file_size > audio_start) {
+            /* CBR estimate */
+            info->total_frames = (uint32_t)((uint64_t)(file_size - audio_start) * 8 * fi.hz /
+                                            ((uint64_t)fi.bitrate_kbps * 1000));
+        }
+    }
+    m->pcm_pos = 0;
+    m->channels = fi.channels;
+
+    info->fmt.sample_rate = (uint32_t)fi.hz;
+    info->fmt.bits_per_sample = 16;
+    info->fmt.channels = (uint8_t)fi.channels;
+    info->codec = "MP3";
+    if (!supported_format(&info->fmt, err)) {
+        mp3_free(d);
+        return NULL;
+    }
+    return d;
+}
+
+static size_t mp3_read(decoder_t *d, int16_t *out, size_t frames)
+{
+    mp3_state_t *m = d->mp3;
+    size_t done = 0;
+    while (done < frames) {
+        if (m->pcm_pos == m->pcm_len) {
+            mp3dec_frame_info_t fi;
+            int n = mp3_next_frame(d, &fi, NULL);
+            if (n <= 0) {
+                break;
+            }
+            m->pcm_pos = 0;
+            m->pcm_len = (size_t)n;
+            m->channels = fi.channels;
+        }
+        size_t take = m->pcm_len - m->pcm_pos;
+        if (take > frames - done) {
+            take = frames - done;
+        }
+        for (size_t i = 0; i < take; i++) {
+            size_t src = m->pcm_pos + i;
+            int16_t l = m->channels == 2 ? m->pcm[2 * src] : m->pcm[src];
+            int16_t r = m->channels == 2 ? m->pcm[2 * src + 1] : l;
+            out[2 * (done + i)] = l;
+            out[2 * (done + i) + 1] = r;
+        }
+        m->pcm_pos += take;
+        done += take;
+    }
+    return done;
+}
+
 /* ---------- dispatch ---------- */
 
 decoder_t *decoder_open(const char *path, decoder_info_t *info, const char **err)
@@ -305,6 +591,9 @@ decoder_t *decoder_open(const char *path, decoder_info_t *info, const char **err
     if (strcasecmp(ext, ".flac") == 0) {
         return flac_open_dec(path, info, err);
     }
+    if (strcasecmp(ext, ".mp3") == 0) {
+        return mp3_open_dec(path, info, err);
+    }
     *err = "Format not supported";
     return NULL;
 }
@@ -314,7 +603,11 @@ size_t decoder_read(decoder_t *d, int16_t *out, size_t frames)
     if (frames > DECODER_MAX_FRAMES) {
         frames = DECODER_MAX_FRAMES;
     }
-    return d->kind == DEC_FLAC ? flac_read(d, out, frames) : wav_read(d, out, frames);
+    switch (d->kind) {
+    case DEC_FLAC: return flac_read(d, out, frames);
+    case DEC_MP3: return mp3_read(d, out, frames);
+    default: return wav_read(d, out, frames);
+    }
 }
 
 uint64_t decoder_read_time_us(const decoder_t *d)
@@ -325,6 +618,10 @@ uint64_t decoder_read_time_us(const decoder_t *d)
 void decoder_close(decoder_t *d)
 {
     if (!d) {
+        return;
+    }
+    if (d->kind == DEC_MP3) {
+        mp3_free(d);
         return;
     }
     if (d->kind == DEC_FLAC) {

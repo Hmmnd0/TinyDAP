@@ -869,7 +869,7 @@ evidence in [Stage0_Findings.md](Stage0_Findings.md).
 -   [x] FreeRTOS task architecture
 -   [x] microSD filesystem access (SPI mode, FAT32)
 -   [x] FLAC and WAV decoding (16/24-bit, up to 96 kHz)
--   [ ] MP3 decoding
+-   [ ] MP3 decoding (minimp3 integrated and host-verified; on-device test pending)
 -   [x] PCM buffering
 -   [x] I2S + DMA playback
 -   [x] ES8311 control over I2C
@@ -878,7 +878,7 @@ evidence in [Stage0_Findings.md](Stage0_Findings.md).
 -   [x] directory handling and folder play queue
 -   [ ] playlist files
 -   [x] playback state machine and track changes
--   [ ] gapless-playback experiments
+-   [x] gapless playback for same-sample-rate tracks (FLAC, WAV)
 -   [x] underrun detection
 -   [ ] long-duration playback stability (multi-hour soak)
 -   [x] memory and task-stack measurements

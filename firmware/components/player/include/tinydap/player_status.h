@@ -34,5 +34,8 @@ typedef struct {
     void (*toggle_pause)(void *ctx);
     void (*stop)(void *ctx);
     void (*set_volume_db)(void *ctx, int db);
+    /* Track to continue into without a gap when the current one ends, if
+     * its sample rate matches (NULL clears). */
+    void (*set_next)(void *ctx, const char *path);
     void *ctx;
 } player_ops_t;
