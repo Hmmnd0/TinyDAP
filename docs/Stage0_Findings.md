@@ -14,6 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
+| 2026-10-02 | FLAC 24/96 stress test passes: 0 underruns, ES8311 runs at 96 kHz | — |
 | 2026-10-02 | FLAC playback (dr_flac), tags on Now Playing | `574ae93` |
 | 2026-10-02 | SD card browser UI + WAV playback | `82b3caf` |
 | 2026-10-02 | 440 Hz test tone through I2S → ES8311 → 3.5 mm jack | `4c3a815` |
@@ -34,11 +35,39 @@ core 0 (write-up §18), 32 KB PCM ring in internal SRAM.
 | FLAC 16/44.1 stereo, continuous | 0 | 78–100% | |
 | WAV 16/44.1 stereo, 4+ min continuous | 0 | 84–100% | |
 | WAV 16/48 stereo (Chip Rack) | *not yet logged* | | I2S retune 44.1 ↔ 48 kHz implemented; confirm by ear and log |
-| FLAC 24/96 stereo | *pending* | | Test files made (upsampled); see below |
+| **FLAC 24/96 stereo, rapid switching: 20 track changes in ~13 s** | **0** | **65–93%** | Upsampled test files, ~2.8 Mbit/s |
+| FLAC 24/96 stereo, continuous | 0 | 65–93% | Plays at correct speed; audibly fine on headphones |
 
 Track start latency is dominated by opening the file; the audio task waits
-for the ring to be half full (~90 ms of audio), which FLAC fills in a few
-milliseconds.
+for the ring to be half full, which FLAC fills in a few milliseconds.
+
+#### 24/96 FLAC: what the numbers tell us
+
+24/96 is the write-up's worst case (§4: ~576 KB/s of PCM), roughly 3x the
+decode work and SD bandwidth of 16/44.1.
+
+- **The ESP32-S3 keeps up with the worst case.** Zero underruns, even while
+  hammering track changes, with the decoder at priority 22 on core 1. Rev A
+  uses the same CPU, with faster 4-bit SDMMC, so this carries over.
+- **The ring runs lower, and that is expected, not a problem yet.** The
+  ring is a fixed 32 KB, and its *time* coverage shrinks with sample rate:
+
+  | Source | Ring bytes/s (16-bit stereo out) | 32 KB ring holds |
+  |---|---|---|
+  | 44.1 kHz | 176 KB/s | ~186 ms |
+  | 96 kHz | 384 KB/s | **~85 ms** |
+
+  At 96 kHz the audio task drains the ring 2.2x faster, so the same bytes
+  give less than half the protection against a slow SD read. Fill dipped to
+  65% (~55 ms of audio in hand) but never emptied.
+- **Recommendation:** raise the PCM ring to 64 KB (~170 ms at 96 kHz).
+  There is ~130 KB of internal heap free while playing 24/96, and start
+  latency is unaffected because playback begins at half full. Then run the
+  worst-case SD latency test (fragmented card) at 96 kHz.
+- **Decoder stack does not grow with bit depth.** ~7.2 KB used for both
+  16/44.1 and 24/96; the 16 KB stack has ~9 KB headroom.
+- **dr_flac heap grows only slightly** with 4608-frame blocks: ~49 KB vs
+  ~45 KB, flat across all track changes.
 
 ### Memory
 
@@ -48,26 +77,28 @@ milliseconds.
 | WAV playing | 182 KB | 175 KB |
 | FLAC 16/44.1 playing, 8 KB decoder stack | 142 KB | 141 KB |
 | FLAC 16/44.1 playing, 16 KB decoder stack | 134 KB | 130 KB |
+| Idle after reboot, 16 KB decoder stack | 179 KB | 170 KB |
+| FLAC 24/96 playing (4608-frame blocks) | 130 KB | 130 KB |
 
-- dr_flac uses **~45 KB of heap** per open 16/44.1 track (decoded-block
-  buffer sized by max block size × channels × 4 bytes, plus read buffer).
+- dr_flac uses **~45 KB of heap** per open 16/44.1 track and **~49 KB** for
+  24/96 with 4608-frame blocks (decoded-block buffer sized by max block
+  size × channels × 4 bytes, plus read buffer).
 - Free heap stays flat across dozens of track changes: no leak.
 - The ST7789 driver holds a **61 KB** DMA frame buffer (240×128×2). On the
   final SSD1306 the frame is 1 KB, so Rev A gains ~60 KB of internal SRAM.
 
 ### Task stacks (free bytes, high-water mark)
 
-| Task | Stack | WAV | FLAC 16/44.1 |
-|---|---|---|---|
-| decoder | 8 KB | 5.5 KB | **0.96 KB** |
-| decoder | 16 KB | — | 9.1 KB |
-| audio_out | 4 KB | 3.3 KB | 3.3 KB |
-| ui | 8 KB | 4.5 KB | 4.5 KB |
-| input | 3 KB | 1.7 KB | 1.7 KB |
+| Task | Stack | WAV | FLAC 16/44.1 | FLAC 24/96 |
+|---|---|---|---|---|
+| decoder | 8 KB | 5.5 KB | **0.96 KB** | — |
+| decoder | 16 KB | — | 9.1 KB | 9.1 KB |
+| audio_out | 4 KB | 3.3 KB | 3.3 KB | 3.3 KB |
+| ui | 8 KB | 4.5 KB | 4.5 KB | 4.5 KB |
+| input | 3 KB | 1.7 KB | 1.7 KB | 1.7 KB |
 
-**Finding:** dr_flac decodes on the stack, ~7.2 KB for 16/44.1. The 8 KB
-decoder stack was nearly exhausted and was raised to 16 KB. Re-check with
-24-bit and larger block sizes.
+**Finding:** dr_flac decodes on the stack, ~7.2 KB for both 16/44.1 and
+24/96. The 8 KB decoder stack was nearly exhausted and was raised to 16 KB.
 
 ### Decoder correctness
 
@@ -86,6 +117,7 @@ decoder stack was nearly exhausted and was raised to 16 KB. Re-check with
 | ES8311 I2C | SDA 8, SCL 9, address 0x18 | M5Unified pin table; chip ID reads `8311` |
 | ES8311 I2S | port 1, BCLK 41, WS 43, DOUT 42, DIN 46, no MCLK | M5Unified; audio plays |
 | ES8311 clocking | MCLK derived from BCLK (32×fs, pre-multiply ×8) | Register sequence from M5Unified |
+| ES8311 at 96 kHz | Works: internal MCLK 24.576 MHz from a 3.072 MHz BCLK | 24/96 FLAC plays at correct speed |
 | Headphone output | 3.5 mm jack, **mono** (ES8311 is single-channel) | M5Stack docs, ES8311 |
 | TCA8418 keyboard | I2C 0x34 on the same bus, 7×8 matrix, INT GPIO 11 | M5Cardputer library; keys work |
 | ST7789 LCD | SPI3: MOSI 35, SCLK 36, DC 34, CS 37, RST 33, BL 38; 240×135, inverted, gap (40, 53), swap XY + mirror X | M5GFX config; UI readable and navigable on device |
@@ -104,6 +136,11 @@ decoder stack was nearly exhausted and was raised to 16 KB. Re-check with
 - **ES8311 is mono.** Stereo is folded to (L+R)/2 in the decoder task rather
   than letting the codec drop the right channel. Stereo testing in Stage 0
   needs the PCM5102A on the external I2S port.
+- **Stage 0 can't judge sound quality.** The mono ES8311 path sounds better
+  on headphones than the built-in speaker, but stereo imaging, 24-bit
+  output (currently truncated to 16-bit for the ES8311), and noise floor
+  can only be evaluated on the PCM5102A (Stage 0/1) and CS43131 (Stage 2).
+  Stage 0 validates timing, memory, and correctness, not fidelity.
 - **exFAT is disabled** in ESP-IDF's FatFs (`FF_FS_EXFAT 0`). Cards must be
   FAT32; 64 GB+ cards usually ship exFAT and need reformatting.
 - **macOS writes `._*` AppleDouble files** to FAT cards even with
@@ -134,9 +171,12 @@ decoder stack was nearly exhausted and was raised to 16 KB. Re-check with
 
 ## Open questions / next tests
 
-- [ ] FLAC 24/96: underruns, CPU headroom, decoder stack, dr_flac heap with
-      4608-frame blocks
-- [ ] ES8311 at 96 kHz (internal MCLK 24.576 MHz) — does it lock?
+- [x] FLAC 24/96: 0 underruns under rapid switching; ring 65–93%; decoder
+      stack 7.2 KB; dr_flac heap ~49 KB
+- [x] ES8311 at 96 kHz (internal MCLK 24.576 MHz) — works
+- [ ] Raise PCM ring to 64 KB and re-measure 24/96 fill levels
+- [ ] Measure decoder CPU time per block (currently inferred only from
+      ring fill)
 - [ ] Real hi-res source material (e.g. 2L test bench) vs upsampled files
 - [ ] PCM5102A on the external I2S port: stereo, 24-bit output
 - [ ] MP3 via minimp3
