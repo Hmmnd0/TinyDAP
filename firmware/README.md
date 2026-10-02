@@ -67,6 +67,7 @@ Next: on-device MP3 measurements and an overnight soak test.
 | `=` / `-` | Volume up / down |
 | `m` | Browser ↔ Now Playing |
 | `r` | Folder repeat on/off |
+| `o` | Screen off/on |
 
 ### Preparing an SD card
 

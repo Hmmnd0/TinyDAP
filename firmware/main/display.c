@@ -27,6 +27,7 @@ static SemaphoreHandle_t s_idle;    /* given when the last transfer finished */
 static uint8_t s_src_x[BOARD_LCD_W];
 static fb_t s_last;
 static bool s_have_last;
+static bool s_on = true;
 
 static bool on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *ctx)
 {
@@ -102,8 +103,27 @@ esp_err_t display_init(void)
     return ESP_OK;
 }
 
+void display_set_on(bool on)
+{
+    if (on == s_on) {
+        return;
+    }
+    s_on = on;
+    gpio_set_level(BOARD_LCD_BL, on);
+    esp_lcd_panel_disp_on_off(s_panel, on);
+    s_have_last = false;  /* redraw on the next frame after turning on */
+}
+
+bool display_is_on(void)
+{
+    return s_on;
+}
+
 void display_show(const fb_t *fb)
 {
+    if (!s_on) {
+        return;
+    }
     if (s_have_last && memcmp(fb, &s_last, sizeof s_last) == 0) {
         return;
     }

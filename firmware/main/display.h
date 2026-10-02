@@ -9,5 +9,10 @@
  */
 esp_err_t display_init(void);
 
-/* Pushes the framebuffer if it changed since the last call. */
+/* Pushes the framebuffer if it changed since the last call. Does nothing
+ * while the display is off. */
 void display_show(const fb_t *fb);
+
+/* Backlight and panel on/off. */
+void display_set_on(bool on);
+bool display_is_on(void);

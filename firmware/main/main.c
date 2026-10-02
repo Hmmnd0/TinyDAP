@@ -6,6 +6,7 @@
  * The UI renders the final 128x64 OLED layout, scaled onto the ST7789.
  */
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
@@ -39,6 +40,7 @@ static const char *TAG = "tinydap";
 #define CORE_SYSTEM 0
 
 static QueueHandle_t s_inputs;   /* ui_input_t */
+static atomic_bool s_toggle_screen;  /* set by input, applied by the UI task */
 static ui_app_t s_app;
 static fb_t s_fb;
 
@@ -93,6 +95,12 @@ static void input_task(void *arg)
     for (;;) {
         int n = keyboard_read(ev, 8);
         for (int i = 0; i < n; i++) {
+            /* Screen on/off is a platform control, not a player input. The
+             * UI task applies it, since it owns the display. */
+            if (ev[i].pressed && ev[i].key == 'o') {
+                atomic_store(&s_toggle_screen, true);
+                continue;
+            }
             ui_input_t in;
             if (!map_key(ev[i].key, &in)) {
                 continue;
@@ -129,6 +137,9 @@ static void ui_task(void *arg)
             ui_app_input(&s_app, in, &st, now_ms());
             player_get_status(&st);
             got = xQueueReceive(s_inputs, &in, 0) == pdTRUE;
+        }
+        if (atomic_exchange(&s_toggle_screen, false)) {
+            display_set_on(!display_is_on());
         }
         ui_app_tick(&s_app, &st, now_ms());
         ui_app_render(&s_app, &s_fb, &st, now_ms());
