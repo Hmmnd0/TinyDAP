@@ -27,8 +27,8 @@ not yet a frozen production BOM).
 | Charger | TI BQ25185DLHR | 1S LiPo charging |
 | Main regulator | TI TPS63031DSKR + inductor | 3.3 V buck-boost |
 | Audio regulators | TBD low-noise 1.8 V rail(s) | CS43131 supplies |
-| Level shifting | TBD | 3.3 V ESP32 ↔ 1.8 V CS43131 where required |
-| Headphone jack | Same Sky SJ-43516-SMT-TR | 3.5 mm TRS stereo output |
+| Level shifting | TBD (required) | 3.3 V ESP32 ↔ 1.8 V CS43131 for I²S, MCLK, I²C |
+| Headphone jack | Same Sky SJ-43516-SMT-TR | 3.5 mm stereo output (TRRS jack with detect switches, used with TRS headphones) |
 | Buttons | GCT SWT0005-015516SSA ×5 | Side controls: play/pause, previous, next, volume ± (optional power/hold) |
 | Battery | 400–600 mAh 1S LiPo pouch | Portable power, behind the PCB |
 | ESD | TBD | USB, headphone, and user-accessible protection |

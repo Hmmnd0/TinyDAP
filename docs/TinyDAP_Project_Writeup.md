@@ -5,7 +5,7 @@
 **Status:** Stage 0 in progress. FLAC/WAV playback with an SD-card
 browser UI runs on the Cardputer-Adv; Stage 1 breadboard parts are next.
 Measurements: [Stage0_Findings.md](Stage0_Findings.md)\
-**Revision:** v9, 2026-10-02 (see Revision history at the end)\
+**Revision:** v10, 2026-10-02 (see Revision history at the end)\
 **Primary goal:** Build a very small battery-powered digital audio
 player capable of true local lossless playback from microSD, with a
 monochrome OLED, physical controls, high-quality wired headphone output,
@@ -62,6 +62,12 @@ price observed: about \$6.10--\$6.25
 PSRAM in the 7 × 7 mm PICO-1 package. The N8R2 variant should be
 retained as a sourcing fallback where electrically/package compatible,
 but it is no longer the primary TinyDAP target.
+
+Temperature rating differs between the two: the N8R8 is rated for −40 to
+65 °C ambient, the N8R2 for −40 to 85 °C (datasheet v1.2). 65 °C is ample
+for a pocket player but rules out hot environments such as a car
+dashboard. Pin details for both are in
+[RevA_Parts_Pinouts.md](RevA_Parts_Pinouts.md).
 
 ### Why N8R8 is now preferred
 
@@ -329,7 +335,10 @@ The final circuit must account for:
 -   Charge-pump components
 -   Headphone output routing
 -   Reset/control sequencing
--   Appropriate level translation where required
+-   Level translation between the 3.3 V ESP32-S3 and the CS43131's 1.8 V
+    logic (VL = 1.66–1.94 V) for I²S (SCLK1, LRCK1, SDIN1), MCLK, and I²C
+    (SDA, SCL). RESET, INT, and HP_DETECT are in the CS43131's VP domain
+    (3.0–5.25 V) and can connect at 3.3 V directly.
 -   Very careful decoupling
 -   Low-noise PCB layout
 
@@ -358,6 +367,12 @@ Preferred characteristics:
 
 A representative panel discussed for the project is the Winstar
 0.96-inch 128 × 64 OLED family.
+
+The WEO012864D comes in two FPC versions: `WEO012864DWPP3N00006`
+(default, hot-bar soldered FPC) and `WEO012864DWPP3N00F00` (ZIF FPC for a
+board connector). Hot-bar saves the connector's area and height but makes
+the display permanent; ZIF allows replacement and easier assembly. Rev A
+needs to choose one.
 
 The higher-resolution 128 × 64 display is preferred over the earlier 64
 × 48 idea because:
@@ -698,13 +713,16 @@ https://www.digikey.com/en/products/detail/gct/SWT0005-015516SSA/28022338
 
 ## 16. Headphone jack
 
-Final target:
+Final target: **3.5 mm stereo headphone jack**, used with ordinary TRS
+headphones.
 
-**3.5 mm TRS stereo jack**
+Selected part: **Same Sky / CUI SJ-43516-SMT-TR**
 
-Previously considered:
-
-**Same Sky / CUI SJ-43516-SMT-TR**
+Note that this part is a 4-conductor (TRRS) jack with tip and ring
+switches, not a 3-conductor TRS jack. It works with TRS headphones (ring 2
+and the sleeve contact both land on the plug's sleeve), and its tip
+switch can drive the CS43131 HP_DETECT input. Pinout in
+[RevA_Parts_Pinouts.md](RevA_Parts_Pinouts.md).
 
 DigiKey:
 https://www.digikey.com/en/products/detail/same-sky-formerly-cui-devices/SJ-43516-SMT-TR/669721
@@ -1349,7 +1367,8 @@ ESP32-S3 testing.
 ## 21. Final raw-component BOM
 
 The following is the current intended direction, not yet a frozen
-production BOM.
+production BOM. Pinouts, datasheets, and distributor links for each part
+are in [RevA_Parts_Pinouts.md](RevA_Parts_Pinouts.md).
 
   -----------------------------------------------------------------------------
   Function             Raw component          Current role
@@ -1375,7 +1394,8 @@ production BOM.
 
   Main regulator       TI TPS63031DSKR        3.3 V buck-boost
 
-  Headphone jack       SJ-43516-SMT-TR        3.5 mm stereo output
+  Headphone jack       SJ-43516-SMT-TR        3.5 mm stereo output (TRRS
+                                              jack, used with TRS plugs)
 
   Buttons              GCT SWT0005-015516SSA  Side controls
 
@@ -1384,8 +1404,8 @@ production BOM.
   Audio regulators     TBD low-noise 1.8 V    CS43131 supplies
                        rail(s)                
 
-  Level shifting       TBD                    3.3 V ESP32 ↔ 1.8 V CS43131 where
-                                              required
+  Level shifting       TBD part (required)    3.3 V ESP32 ↔ 1.8 V CS43131:
+                                              I²S, MCLK, I²C
 
   ESD                  TBD                    USB/headphone/user-accessible
                                               protection
@@ -1541,7 +1561,7 @@ be laid out.
                                    CS43131
                                       |
                                       v
-                                  3.5 mm TRS
+                               3.5 mm jack
 ```
 
 Potential future branch:
@@ -1867,6 +1887,12 @@ is the main cost.
 
 ## Revision history
 
+-   **v10 (2026-10-02):** Findings from the Rev A datasheets
+    ([RevA_Parts_Pinouts.md](RevA_Parts_Pinouts.md)): level translation
+    is required for I²S, MCLK, and I²C because CS43131 logic is 1.8 V only
+    (§7, §21); N8R8 is rated to 65 °C ambient vs 85 °C for N8R2 (§2); the
+    SJ-43516 is a TRRS jack used with TRS headphones (§16, §21, §24);
+    WEO012864D has hot-bar and ZIF FPC versions to choose between (§8).
 -   **v9 (2026-10-02):** Status updated to Stage 0 in progress. Heading
     levels made consistent. Stage numbering unified on §17 (Stages 0–4);
     §23 rewritten from "Phases 1–8" into a stage plan with exit criteria;

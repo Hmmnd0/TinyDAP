@@ -8,7 +8,7 @@ ESP-IDF project for the ESP32-S3. Stage 0 target: M5Stack Cardputer-Adv.
 firmware/
 ├── main/                     ESP32 / Cardputer-Adv platform code
 │   ├── main.c                startup, input/UI/stats tasks, key mapping
-│   ├── player.c              WAV playback engine: decoder + audio tasks (§18)
+│   ├── player.c              playback engine: decoder + audio tasks (§18)
 │   ├── i2s_sink.c            I2S audio output
 │   ├── es8311.c              ES8311 codec driver
 │   ├── display.c             ST7789 driver, shows the 128x64 UI scaled up
