@@ -29,13 +29,12 @@ on the host and ports unchanged to the Stage 1 breadboard and Rev A.
 
 ## Current state
 
-The task layout from write-up §18 is in place. A 440 Hz test tone flows
-decoder → PCM ring → audio output, where audio output is a null sink that
-drains the ring at the real 44.1 kHz rate. Every 2 s the `stats` task logs
-ring fill, underrun count, free internal heap, and per-task stack headroom.
+The task layout from write-up §18 is in place. A 440 Hz test tone plays
+decoder → PCM ring → audio output → I2S → ES8311 → 3.5 mm jack (mono),
+verified on hardware. Every 2 s the `stats` task logs ring fill, underrun
+count, free internal heap, and per-task stack headroom.
 
-Next (step 3): replace the null sink with I2S → ES8311 → headphones, and
-have the storage task read a WAV from microSD.
+Next: the storage task reads a WAV from microSD in place of the tone.
 
 ## ESP32 build
 

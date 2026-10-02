@@ -6,7 +6,7 @@
  * Sources:
  *   I2S codec pins   M5Unified board config (board_M5CardputerADV)
  *   microSD, ext I2S EMBER src/main.cpp (known working)
- *   I2C pins         write-up §17 — not yet cross-checked
+ *   I2C pins         M5Unified internal I2C table (SCL 9, SDA 8)
  *
  * Verify against the current M5Stack schematic before relying on anything
  * marked "unverified".
@@ -15,9 +15,9 @@
 #define BOARD_NAME "M5Stack Cardputer-Adv"
 
 /* ES8311 codec: control over I2C */
-#define BOARD_CODEC_I2C_SDA   8     /* unverified */
-#define BOARD_CODEC_I2C_SCL   9     /* unverified */
-#define BOARD_CODEC_I2C_ADDR  0x18  /* ES8311 default address; unverified */
+#define BOARD_CODEC_I2C_SDA   8
+#define BOARD_CODEC_I2C_SCL   9
+#define BOARD_CODEC_I2C_ADDR  0x18  /* as used by M5Unified */
 
 /* ES8311 codec: audio over I2S */
 #define BOARD_CODEC_I2S_PORT  1
