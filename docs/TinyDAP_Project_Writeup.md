@@ -2,7 +2,10 @@
 
 ## Project Design, Prototype Plan, Firmware Architecture, and PCB Roadmap
 
-**Status:** Prototype / Rev A planning\
+**Status:** Stage 0 in progress. FLAC/WAV playback with an SD-card
+browser UI runs on the Cardputer-Adv; Stage 1 breadboard parts are next.
+Measurements: [Stage0_Findings.md](Stage0_Findings.md)\
+**Revision:** v9, 2026-10-02 (see Revision history at the end)\
 **Primary goal:** Build a very small battery-powered digital audio
 player capable of true local lossless playback from microSD, with a
 monochrome OLED, physical controls, high-quality wired headphone output,
@@ -98,19 +101,24 @@ Even 2 MB (N8R2) would be enough for basic lossless playback, which is
 why N8R2 remains a viable sourcing fallback. TinyDAP targets the N8R8's
 8 MB for the headroom described above, not because playback requires it.
 
-### Prototype MCU board
+### Prototype MCU board (Stage 1)
 
 Use an **ESP32-S3 development board with PSRAM** rather than attempting
 to breadboard the PICO SiP.
 
-Good prototype choices include:
+Preferred: **Espressif ESP32-S3-DevKitC-1-N8R8**: the same 8 MB flash /
+8 MB octal PSRAM configuration as the Rev A PICO-1-N8R8, with nearly all
+GPIO broken out.
 
--   Espressif ESP32-S3-DevKitC-1 variants with PSRAM
--   Adafruit QT Py ESP32-S3 with 8 MB PSRAM for a smaller breadboard
-    setup
+Octal PSRAM occupies **GPIO 33–37** on N8R8 parts, in addition to the SPI
+flash pins (GPIO 26–32) every ESP32-S3 reserves. Stage 1 and Rev A pin
+maps must avoid them; confirm against the PICO-1 datasheet when the
+Stage 1 pin plan is drawn. (The Cardputer-Adv's LCD happens to use GPIO
+33–37, which is fine there because it has no PSRAM.)
 
-Adafruit QT Py ESP32-S3 product family:
-https://www.adafruit.com/product/5700
+The Adafruit QT Py ESP32-S3 (product 5700: 4 MB flash, **2 MB** PSRAM) is
+not recommended for Stage 1: it exposes too few GPIO for microSD, SPI
+OLED, I²S, and five buttons at once.
 
 The prototype does not have to use the exact PICO package. What matters
 is testing the same ESP32-S3 CPU architecture, PSRAM behavior, I²S,
@@ -262,17 +270,19 @@ There does not appear to be a widely distributed, inexpensive,
 mainstream CS43131 breakout board comparable to common PCM5102A or
 MAX98357 modules.
 
-Therefore the recommended development process is:
+Therefore the recommended development process (stage numbers as in §17)
+is:
 
-**Stage 1:** Validate the entire ESP32 audio pipeline with an
-inexpensive I²S DAC development module.
+**Stages 0–1:** Validate the entire ESP32 audio pipeline, first on the
+Cardputer-Adv and then on the ESP32-S3 breadboard, with an inexpensive
+I²S DAC module (PCM5102A).
 
 **Stage 2:** Validate the CS43131 itself using either the official
 board, if access becomes practical, or a small custom CS43131-QFN
 carrier PCB based closely on the Cirrus reference design.
 
-**Stage 3:** Integrate the proven CS43131 circuit into the final TinyDAP
-PCB.
+**Stage 4:** After Stage 3 power validation, integrate the proven
+CS43131 circuit into the TinyDAP Rev A PCB.
 
 This separates firmware risk from difficult mixed-signal PCB risk.
 
@@ -421,9 +431,11 @@ https://www.digikey.com/en/products/detail/gct/MEM2075-00-140-01-A/9859614
 
 Use a microSD breakout.
 
-Prefer a 3.3 V breakout that exposes the SD bus if possible. SPI mode is
-perfectly adequate for early firmware testing, although final hardware
-should test SDMMC before PCB freeze.
+Prefer a 3.3 V breakout that exposes the native SD bus. SPI mode works
+for early firmware testing, but Stage 0 measurements show it is the
+largest playback cost at 24/96: SD reads took 24–28% of wall time versus
+~18% for FLAC decoding itself (see Stage0_Findings.md). Stage 1 should
+move to 4-bit SDMMC early, and Rev A must use it.
 
 The firmware/storage layer should eventually be tested under:
 
@@ -439,40 +451,22 @@ The firmware/storage layer should eventually be tested under:
 
 ## 10. Audio decoder software
 
-### Fastest bring-up: ESP32-audioI2S
+### Chosen: dr_flac with a TinyDAP-owned PCM pipeline
 
-Repository: https://github.com/schreibfaul1/ESP32-audioI2S
+Repository: https://github.com/mackron/dr_libs (public domain / MIT-0)
 
-This library is unusually well matched to the project because it already
-supports:
+**Decided in Stage 0.** TinyDAP decodes FLAC with `dr_flac` and owns the
+PCM pipeline directly, rather than handing file-to-I²S playback to an
+all-in-one library. WAV uses a small built-in parser; both sit behind one
+decoder interface that outputs PCM into TinyDAP's ring buffer.
 
--   ESP32-S3
--   PSRAM
--   I²S
--   SD storage
--   FLAC
--   MP3
--   AAC/M4A
--   WAV
--   Opus
--   Vorbis
--   Multiple PCM sample widths
+Stage 0 results on the Cardputer-Adv (details in Stage0_Findings.md):
 
-The initial proof-of-concept can therefore be:
-
-``` text
-microSD -> ESP32-audioI2S -> I2S -> prototype DAC
-```
-
-This gets audible FLAC playback working before writing a custom audio
-engine.
-
-### Long-term option: dr_flac
-
-Repository: https://github.com/mackron/dr_libs
-
-`dr_flac` is attractive for the production firmware because it allows
-the project to own the PCM pipeline directly.
+-   Output bit-identical to macOS `afconvert` across a 14-track 16/44.1
+    album.
+-   24/96 FLAC decodes at ~18% of one core and runs 2.1–2.3x faster than
+    real time (including SD reads), with 0 underruns.
+-   ~45–49 KB heap and ~7.2 KB stack per open track.
 
 Architecture:
 
@@ -480,7 +474,7 @@ Architecture:
 microSD
    |
    v
-dr_flac
+dr_flac / WAV / (MP3)
    |
    v
 PCM ring buffer
@@ -505,9 +499,18 @@ Owning the PCM stream makes future features easier:
 
 ### MP3
 
-A small MP3 decoder such as minimp3 could eventually be paired with
-dr_flac if the project moves away from the all-in-one ESP32-audioI2S
-framework.
+Planned: **minimp3** (public domain / CC0) behind the same decoder
+interface as FLAC and WAV.
+
+### Reference: ESP32-audioI2S
+
+Repository: https://github.com/schreibfaul1/ESP32-audioI2S
+
+An Arduino all-in-one player library supporting ESP32-S3, PSRAM, FLAC,
+MP3, AAC/M4A, WAV, Opus, and Vorbis. It was the original fastest-bring-up
+option, but it owns the path from file to I²S, which conflicts with the
+owned PCM pipeline above. It remains a useful reference for codec support
+and edge cases.
 
 ------------------------------------------------------------------------
 
@@ -711,7 +714,7 @@ does not inherently require a separate conventional headphone amplifier.
 
 ------------------------------------------------------------------------
 
-# 17. Development Stage 0: M5Stack Cardputer-Adv
+## 17. Development Stage 0: M5Stack Cardputer-Adv
 
 The already-owned **M5Stack Cardputer-Adv (K132-ADV)** should serve as
 TinyDAP **Development Stage 0**. It is not the final hardware target,
@@ -722,7 +725,7 @@ and ESP-IDF support.
 This lets development begin with the actual ESP32/FreeRTOS environment
 before the dedicated TinyDAP breadboard is assembled.
 
-## Stage 0 audio path
+### Stage 0 audio path
 
 ``` text
 Cardputer-Adv microSD
@@ -772,7 +775,7 @@ rate, codec, playback position, buffer fill, memory use, CPU/task
 diagnostics, and underrun counts. The keyboard can stand in for
 play/pause, previous, next, volume, menu, and debug controls.
 
-## EMBER reference implementation
+### EMBER reference implementation
 
 **EMBER** by HorseyofCoursey should be treated as an important Stage 0
 reference implementation:
@@ -839,29 +842,32 @@ proving that an ESP32-S3 can function as a capable music player, Stage 0
 should use EMBER as a reference while concentrating on the architecture
 and hardware interfaces that TinyDAP needs to own.
 
-## Stage 0 goals
+### Stage 0 goals
 
-Use the Cardputer-Adv to prove:
+Use the Cardputer-Adv to prove the following. Status as of 2026-10-02;
+evidence in [Stage0_Findings.md](Stage0_Findings.md).
 
--   ESP-IDF build/flash workflow
--   FreeRTOS task architecture
--   microSD filesystem access
--   FLAC, MP3, and WAV decoding
--   PCM buffering
--   I2S + DMA playback
--   ES8311 control over I2C
--   stereo output through an external PCM5102A on the second I2S port
--   metadata parsing
--   playlists/directory handling
--   playback state machine and track changes
--   gapless-playback experiments
--   underrun detection
--   long-duration playback stability
--   memory and task-stack measurements
--   UI architecture
--   input/event architecture
+-   [x] ESP-IDF build/flash workflow
+-   [x] FreeRTOS task architecture
+-   [x] microSD filesystem access (SPI mode, FAT32)
+-   [x] FLAC and WAV decoding (16/24-bit, up to 96 kHz)
+-   [ ] MP3 decoding
+-   [x] PCM buffering
+-   [x] I2S + DMA playback
+-   [x] ES8311 control over I2C
+-   [ ] stereo output through an external PCM5102A on the second I2S port
+-   [x] metadata parsing (FLAC Vorbis comments)
+-   [x] directory handling and folder play queue
+-   [ ] playlist files
+-   [x] playback state machine and track changes
+-   [ ] gapless-playback experiments
+-   [x] underrun detection
+-   [ ] long-duration playback stability (multi-hour soak)
+-   [x] memory and task-stack measurements
+-   [x] UI architecture (128 × 64 framebuffer, scaled onto the LCD)
+-   [x] input/event architecture
 
-## What it does not replace
+### What it does not replace
 
 The Cardputer-Adv does **not** validate the final 128 × 64 SSD1306 over
 4-wire SPI, the dedicated microSD implementation, PCM5102A bring-up
@@ -870,7 +876,7 @@ circuit, final physical controls, or final PCB layout.
 
 Those remain dedicated prototype milestones.
 
-## Revised development sequence
+### Revised development sequence
 
 ``` text
 STAGE 0 — Cardputer-Adv
@@ -898,7 +904,7 @@ reference source, especially when debugging the CS43131 carrier.
 
 ------------------------------------------------------------------------
 
-# 18. ESP-IDF / FreeRTOS real-time architecture
+## 18. ESP-IDF / FreeRTOS real-time architecture
 
 TinyDAP should be designed around the ESP32-S3's **FreeRTOS** runtime
 rather than as one large blocking playback loop. ESP-IDF uses FreeRTOS,
@@ -942,9 +948,9 @@ Metadata / library task ------------+
 Wi-Fi / BLE services (when enabled)-+
 ```
 
-## Suggested task responsibilities
+### Suggested task responsibilities
 
-### Audio / I²S path
+#### Audio / I²S path
 
 I²S DMA should continuously consume PCM buffers. DMA buffers and other
 latency-critical structures should live in **internal SRAM**, not PSRAM.
@@ -952,43 +958,48 @@ latency-critical structures should live in **internal SRAM**, not PSRAM.
 The audio path gets the highest practical priority because an underrun
 is immediately audible.
 
-### Decoder task
+#### Decoder task
 
 The decoder converts FLAC/MP3/etc. into PCM and keeps the PCM ring
 buffer comfortably ahead of the DMA consumer.
 
-`dr_flac` is a strong long-term candidate for the FLAC path. Initial
-bring-up can use ESP32-audioI2S.
+FLAC decoding uses `dr_flac` (§10). It needs ~7.2 KB of stack, so the
+decoder task has 16 KB (Stage 0 measurement).
 
-### Storage / read-ahead task
+#### Storage / read-ahead task
 
 The storage task reads compressed data from microSD in larger chunks so
 brief SD-card latency spikes do not starve the decoder.
 
 Large read-ahead caches are a good use of **PSRAM**.
 
-### UI task
+In Stage 0 the decoder task reads the file itself through a 16 KB
+read-ahead buffer, which keeps each SD access a single multi-sector
+transfer; a separate storage task remains the plan once PSRAM is
+available.
+
+#### UI task
 
 The OLED task updates the SSD1306 framebuffer over SPI without blocking
 audio. Display refreshes do not need audio-level priority.
 
-### Input task
+#### Input task
 
 Buttons should generate events rather than directly performing expensive
 player operations from GPIO/interrupt context.
 
-### Metadata / library task
+#### Metadata / library task
 
 Tag parsing, directory scans, sorting, and library indexing should run
 at lower priority and yield readily to playback work.
 
-### Networking
+#### Networking
 
 Wi-Fi/BLE work should remain lower priority than playback. If radio
 features are unnecessary during local playback, firmware can disable or
 reduce them to save power and reduce RF/noise activity.
 
-## Inter-task communication
+### Inter-task communication
 
 Prefer explicit FreeRTOS primitives rather than shared mutable state:
 
@@ -1000,7 +1011,7 @@ Prefer explicit FreeRTOS primitives rather than shared mutable state:
 
 Avoid holding locks in the audio path.
 
-## Dual-core starting point
+### Dual-core starting point
 
 A reasonable initial ESP32-S3 allocation is:
 
@@ -1024,7 +1035,7 @@ This is a starting point, not a requirement. Actual core affinity and
 priorities should be determined from measurements during prototype
 stress testing.
 
-## What to measure
+### What to measure
 
 During development, log or expose:
 
@@ -1046,7 +1057,7 @@ architecture is doing its job.
 
 ------------------------------------------------------------------------
 
-# 19. Complete prototype shopping list
+## 19. Complete prototype shopping list
 
 **Already owned:** M5Stack Cardputer-Adv for Stage 0 development. The
 PCM5102A listed below is also used in Stage 0 for stereo output from the
@@ -1058,13 +1069,12 @@ prove storage, decoding, I²S audio, SPI display, controls, USB
 development, and later CS43131 integration without making the difficult
 final DAC circuit the first dependency.
 
-## A. Required for Prototype Stage 1: complete working player
+### A. Required for Prototype Stage 1: complete working player
 
-### MCU / development
+#### MCU / development
 
--   **1× ESP32-S3 development board with PSRAM**
-    -   Preferred: ESP32-S3-DevKitC-1 variant with PSRAM
-    -   Compact alternative: Adafruit QT Py ESP32-S3 with 8 MB PSRAM
+-   **1× ESP32-S3-DevKitC-1-N8R8** (same flash/PSRAM configuration as
+    Rev A; see §2)
 -   **1× USB data cable** appropriate for the selected ESP32-S3 board
 -   **1× solderless breadboard**
 -   **1 set male-to-male jumper wires**
@@ -1075,7 +1085,7 @@ final DAC circuit the first dependency.
 The development board must expose enough GPIO for microSD, I²S audio,
 SPI OLED, and five playback buttons simultaneously.
 
-### Display
+#### Display
 
 -   **1× 0.96-inch 128 × 64 SSD1306 OLED development module with 4-wire
     SPI**
@@ -1101,7 +1111,7 @@ RST
 Avoid buying an I²C-only module for this prototype because the final
 TinyDAP display architecture is SPI.
 
-### Storage
+#### Storage
 
 -   **1× microSD breakout/module**
 -   Must be compatible with 3.3 V ESP32 logic
@@ -1116,7 +1126,7 @@ SPI mode is acceptable for the earliest SD bring-up. Before the final
 PCB is frozen, storage should also be tested using the intended ESP32-S3
 SDMMC arrangement.
 
-### Initial audio output
+#### Initial audio output
 
 -   **1× PCM5102A I²S DAC breakout**
 -   **1× temporary stereo headphone amplifier breakout** if the selected
@@ -1129,7 +1139,7 @@ SDMMC arrangement.
 The PCM5102A is a bring-up device only. It proves the ESP32-S3's PCM/I²S
 pipeline; it is not the final TinyDAP DAC.
 
-### Physical controls
+#### Physical controls
 
 -   **5× momentary tactile pushbuttons** minimum:
     -   Play/pause
@@ -1144,7 +1154,7 @@ pipeline; it is not the final TinyDAP DAC.
 ESP32 internal pulls can be used initially, but having physical
 resistors available avoids blocking testing.
 
-### Basic prototyping passives and tools
+#### Basic prototyping passives and tools
 
 Keep a small assortment available rather than buying values one at a
 time:
@@ -1161,7 +1171,7 @@ time:
 -   Optional but useful: oscilloscope for clocks, power rails, and later
     CS43131 work
 
-### Test media
+#### Test media
 
 Prepare a known-good test set containing:
 
@@ -1175,7 +1185,7 @@ Prepare a known-good test set containing:
 -   Long tracks for soak/underrun testing
 -   Tracks with useful metadata/tags for OLED testing
 
-### Stage 1 power
+#### Stage 1 power
 
 Use the ESP32-S3 development board's **USB power** for the first player
 prototype.
@@ -1184,7 +1194,7 @@ Do not add LiPo charging, the final buck-boost converter, or low-noise
 audio power circuitry until SD playback, decoding, I²S output, OLED, and
 buttons are stable.
 
-## B. Prototype Stage 2: CS43131 validation
+### B. Prototype Stage 2: CS43131 validation
 
 Do **not** buy the roughly \$1,200 official Cirrus CDB43131K evaluation
 kit solely for this project.
@@ -1235,7 +1245,7 @@ parts should be selected from the current Cirrus datasheet/reference
 schematic when the carrier schematic is drawn rather than guessed in
 advance.
 
-## C. Prototype Stage 3: battery and portable-power validation
+### C. Prototype Stage 3: battery and portable-power validation
 
 Only after the USB-powered player is stable, add:
 
@@ -1253,7 +1263,7 @@ This stage should measure idle current, playback current, display-on
 current, Wi-Fi current, charge behavior, battery runtime, and whether
 switching-regulator noise is audible.
 
-## D. What does NOT need to be purchased yet
+### D. What does NOT need to be purchased yet
 
 The following final-production parts are **not required to begin the
 breadboard prototype**:
@@ -1274,7 +1284,7 @@ and firmware requirements for Rev A.
 
 ------------------------------------------------------------------------
 
-# 20. Optional Raspberry Pi reference/test platform
+## 20. Optional Raspberry Pi reference/test platform
 
 A Raspberry Pi is **not** the primary TinyDAP development target. The
 ESP32-S3 remains the production processor and the platform on which
@@ -1312,30 +1322,23 @@ ESP32 -> CS43131 fails
     = investigate ESP32 I²S/I²C configuration or firmware
 ```
 
-Where practical, TinyDAP software should keep portable player logic
-separate from platform-specific hardware code:
+TinyDAP software keeps portable player logic separate from
+platform-specific hardware code. The repository layout:
 
 ``` text
-tinyDAP/
-├── codecs/
-├── player/
-│   ├── decoder
-│   ├── buffering
-│   ├── metadata
-│   └── playlist
-└── platform/
-    ├── esp32/
-    │   ├── audio_i2s
-    │   ├── storage_sd
-    │   └── display_spi
-    └── linux/
-        ├── audio_alsa
-        └── storage_linux
+firmware/
+├── components/        portable: no ESP-IDF / FreeRTOS includes
+│   ├── player/        decoders, PCM ring buffer, WAV parser, folder browser
+│   └── ui/            128x64 framebuffer, font, player screens
+├── main/              ESP32 platform: tasks, I2S, codec, display,
+│                      keyboard, and SD drivers, board pin map
+└── host/              native macOS/Linux build: tests and tools
 ```
 
-This can allow decoder, metadata, playlist, and buffering logic to be
-tested under Linux while preserving ESP-IDF/FreeRTOS-specific code for
-the actual player.
+This already lets decoder, buffering, folder, and UI logic be built and
+tested on macOS or Linux, while ESP-IDF/FreeRTOS code stays in `main/`. A
+Linux ALSA output for the Raspberry Pi would be another host-side audio
+sink, alongside the existing WAV-file sink.
 
 The Raspberry Pi should therefore be treated as **optional development
 equipment**, not as a TinyDAP component and not as a substitute for
@@ -1343,7 +1346,7 @@ ESP32-S3 testing.
 
 ------------------------------------------------------------------------
 
-# 21. Final raw-component BOM
+## 21. Final raw-component BOM
 
 The following is the current intended direction, not yet a frozen
 production BOM.
@@ -1395,12 +1398,13 @@ production BOM.
 
 ------------------------------------------------------------------------
 
-# 22. Raw-component vs prototype equivalents
+## 22. Raw-component vs prototype equivalents
 
   ---------------------------------------------------------------------
   Final hardware                     Prototype equivalent
   ---------------------------------- ----------------------------------
-  ESP32-S3-PICO-1                    ESP32-S3 DevKitC / QT Py S3
+  ESP32-S3-PICO-1                    Cardputer-Adv (Stage 0), then
+                                     ESP32-S3-DevKitC-1-N8R8 (Stage 1)
 
   Bare SSD1306 OLED                  SSD1306 OLED breakout
 
@@ -1426,98 +1430,47 @@ production BOM.
 
 ------------------------------------------------------------------------
 
-# 23. Recommended prototype sequence
+## 23. Stage plan and exit criteria
 
-## Phase 1 --- Make sound
+Stages follow §17. Each stage should meet its exit criteria before the
+next one depends on it.
 
-Connect:
+### Stage 0: Cardputer-Adv (in progress)
 
-``` text
-ESP32-S3 Dev Board
-      |
-      +--> microSD breakout
-      |
-      +--> PCM5102A I2S DAC
-```
+Done: SD → FLAC/WAV decode → PCM ring → I²S → ES8311 → 3.5 mm jack; SD
+browser and Now Playing UI; keyboard input; 24/96 stress test with 0
+underruns.
 
-Firmware goal:
+Remaining: MP3; PCM5102A stereo on the external I²S port; gapless
+experiments; multi-hour soak.
 
--   Mount microSD.
--   Open one FLAC file.
--   Decode it.
--   Send PCM through I²S.
--   Obtain clean uninterrupted audio.
+**Exit:** all §17 Stage 0 goals checked.
 
-No OLED, battery, Wi-Fi, or menu system yet.
+### Stage 1: ESP32-S3 breadboard
 
-## Phase 2 --- Stress the decoder
+Hardware: ESP32-S3-DevKitC-1-N8R8, microSD breakout, SPI SSD1306 OLED,
+PCM5102A (plus headphone amplifier if line-level only), five buttons.
+Firmware ports by replacing the `main/` platform code; `components/`
+carries over unchanged.
 
 Test:
 
--   16/44.1 FLAC
--   24-bit FLAC
--   48 kHz
--   96 kHz
--   MP3
--   WAV
--   Long tracks
--   Rapid track changes
+-   16/44.1, 24-bit, 48 kHz, and 96 kHz FLAC
+-   MP3 and WAV
+-   Long tracks and rapid track changes
+-   UI updates and button input during playback
 
 Measure:
 
 -   CPU usage
--   PSRAM usage
--   Internal SRAM usage
+-   PSRAM and internal SRAM usage
 -   Buffer underruns
--   SD read latency
+-   SD read latency, SPI vs 4-bit SDMMC
 
-## Phase 3 --- Add display
+**Exit:** clean stereo playback through the PCM5102A with the OLED and
+buttons, 4-bit SDMMC working, and no underruns under stress.
 
-Add SSD1306 OLED.
-
-Display:
-
--   Track
--   Artist
--   Album
--   Elapsed time
--   Duration
--   Volume
--   Battery eventually
--   Play/pause state
-
-Confirm UI updates do not disturb audio.
-
-## Phase 4 --- Add controls
-
-Add five physical buttons and implement:
-
--   Play/pause
--   Next
--   Previous
--   Volume +
--   Volume -
-
-## Phase 5 --- Build the real PCM pipeline
-
-Decide whether to retain ESP32-audioI2S or move toward:
-
-``` text
-filesystem
-   |
-dr_flac
-   |
-PCM ring buffer
-   |
-audio output abstraction
-   |
-I2S
-```
-
-The second architecture is preferred if simultaneous outputs/DSP become
-important.
-
-## Phase 6 --- CS43131 carrier test
+### Stage 2: CS43131 carrier
 
 Before putting the CS43131 on the final player PCB:
 
@@ -1532,15 +1485,16 @@ Before putting the CS43131 on the final player PCB:
     -   power
     -   ground
     -   headphone output
-5.  Connect it to the known-working ESP32 prototype.
+5.  Connect it to the known-working Stage 1 prototype.
 6.  Write/test CS43131 initialization.
 7.  Confirm all target sample rates.
 8.  Measure noise and stability.
 
-Once this works, shrink to the WLCSP part if the size savings justify
-the assembly complexity.
+**Exit:** all target sample rates play cleanly with acceptable noise.
+Shrink to the WLCSP part only if the size savings justify the assembly
+complexity.
 
-## Phase 7 --- Battery system
+### Stage 3: Battery and power
 
 Add:
 
@@ -1554,14 +1508,17 @@ Add:
 
 Test RF and audio noise while charging.
 
-## Phase 8 --- Final PCB
+**Exit:** measured runtime, charge behavior, and no audible regulator or
+charging noise.
+
+### Stage 4: Rev A PCB
 
 Only after all previous blocks are proven should the complete player PCB
 be laid out.
 
 ------------------------------------------------------------------------
 
-# 24. Final PCB architecture
+## 24. Final PCB architecture
 
 ``` text
                     USB-C
@@ -1599,7 +1556,7 @@ ESP32 PCM/I2S
 
 ------------------------------------------------------------------------
 
-# 25. PCB layout strategy
+## 25. PCB layout strategy
 
 Target a **four-layer PCB**.
 
@@ -1646,7 +1603,7 @@ Suggested test pads:
 
 ------------------------------------------------------------------------
 
-# 26. Approximate physical target
+## 26. Approximate physical target
 
 Earlier estimates evolved as the display dimensions became clearer.
 
@@ -1674,9 +1631,9 @@ over saving the final few millimeters.
 
 ------------------------------------------------------------------------
 
-# 27. Firmware feature roadmap
+## 27. Firmware feature roadmap
 
-## Minimum viable firmware
+### Minimum viable firmware
 
 -   FAT/exFAT storage support as appropriate
 -   FLAC playback
@@ -1689,7 +1646,7 @@ over saving the final few millimeters.
 -   Folder navigation
 -   Reliable resume/track switching
 
-## Next tier
+### Next tier
 
 -   Gapless playback
 -   ReplayGain
@@ -1703,7 +1660,7 @@ over saving the final few millimeters.
 -   Wi-Fi file upload
 -   OTA firmware updates
 
-## Experimental
+### Experimental
 
 -   EQ/DSP
 -   Spectrum display
@@ -1716,7 +1673,7 @@ over saving the final few millimeters.
 
 ------------------------------------------------------------------------
 
-# 28. Spotify distinction
+## 28. Spotify distinction
 
 Two very different things are often called an "ESP32 Spotify player."
 
@@ -1748,7 +1705,7 @@ Local lossless playback is the primary design target.
 
 ------------------------------------------------------------------------
 
-# 29. Why prototype first
+## 29. Why prototype first
 
 Changing from immediate PCB production to a breadboard/module prototype
 is the safer development path.
@@ -1781,7 +1738,7 @@ is rock solid, the hardware can be condensed confidently.
 
 ------------------------------------------------------------------------
 
-# 30. Current design decisions
+## 30. Current design decisions
 
 ### Fairly firm
 
@@ -1789,6 +1746,8 @@ is rock solid, the hardware can be condensed confidently.
 -   ESP32-S3-PICO-1-N8R8 final MCU (N8R2 as sourcing fallback)
 -   Local microSD storage
 -   FLAC as primary lossless format
+-   dr_flac decoder with a TinyDAP-owned PCM pipeline (decided in
+    Stage 0)
 -   0.96" 128×64 monochrome OLED
 -   3.5 mm wired output
 -   USB-C
@@ -1799,35 +1758,35 @@ is rock solid, the hardware can be condensed confidently.
 ### Still under evaluation
 
 -   CS43131 WLCSP vs QFN in final hardware
--   Exact OLED panel
+-   Exact OLED panel (Winstar WEO012864D is the representative candidate)
 -   Exact LiPo dimensions/capacity
 -   Exact low-noise audio regulators
 -   Exact level shifter
 -   Exact battery fuel gauge, if any
--   ESP32-audioI2S vs custom dr_flac pipeline
 -   Bluetooth audio subsystem
 -   Final board dimensions
 
 ------------------------------------------------------------------------
 
-# 31. Recommended immediate purchase
+## 31. Recommended next purchase
 
-For the first test, buy only enough hardware to prove the digital audio
-path:
+Stage 0 runs on the already-owned Cardputer-Adv. Order the PCM5102A
+first, since Stage 0 can use it immediately for stereo:
 
-1.  ESP32-S3 development board with PSRAM
-2.  microSD breakout
-3.  0.96" 128×64 SSD1306 OLED breakout
-4.  PCM5102A I²S DAC breakout
-5.  Breadboard
-6.  Jumper wires
-7.  Five tact switches
-8.  Quality microSD card
-9.  Headphone amp module if the selected PCM5102A board is line-level
-    only
+1.  PCM5102A I²S DAC breakout, plus a headphone amp module if the board
+    is line-level only
 
-Do **not** buy the \$1,248.75 Cirrus evaluation board for the first
-prototype.
+Then the Stage 1 breadboard (full list in §19):
+
+2.  ESP32-S3-DevKitC-1-N8R8
+3.  microSD breakout exposing the native SD pins (for 4-bit SDMMC)
+4.  0.96" 128×64 SSD1306 OLED breakout with 4-wire SPI
+5.  Breadboard and jumper wires
+6.  Five tact switches, plus one spare
+7.  Quality microSD card, FAT32 (exFAT is not supported; cards over
+    32 GB usually need reformatting)
+
+Do **not** buy the \$1,248.75 Cirrus evaluation board.
 
 Do **not** make the CS43131 the first thing that must work.
 
@@ -1851,7 +1810,7 @@ Then substitute the CS43131 into a system that is already known to work.
 
 ------------------------------------------------------------------------
 
-# 32. Reference links
+## 32. Reference links
 
 Cirrus Logic CS43131: https://www.cirrus.com/products/cs43131/
 
@@ -1901,3 +1860,24 @@ The prototype should first establish a known-good ESP32-S3 audio
 pipeline with inexpensive modules. Once that works reliably, the CS43131
 can be introduced, characterized, and ultimately integrated into a
 compact custom PCB.
+
+Stage 0 has since confirmed the first point on real hardware: the
+ESP32-S3 decodes 24/96 FLAC with headroom to spare, and storage, not CPU,
+is the main cost.
+
+## Revision history
+
+-   **v9 (2026-10-02):** Status updated to Stage 0 in progress. Heading
+    levels made consistent. Stage numbering unified on §17 (Stages 0–4);
+    §23 rewritten from "Phases 1–8" into a stage plan with exit criteria;
+    §5 aligned to it. dr_flac recorded as the chosen decoder, with Stage 0
+    evidence (§10, §18, §30); ESP32-audioI2S kept as a reference. SPI-mode
+    SD cost recorded and 4-bit SDMMC prioritized (§9). Stage 1 board
+    specified as ESP32-S3-DevKitC-1-N8R8 with the GPIO 33–37 octal-PSRAM
+    restriction (§2, §19, §22); corrected the QT Py ESP32-S3 spec (2 MB
+    PSRAM, not 8 MB). Code layout in §20 matches the repository. Stage 0
+    goals show status (§17). §31 updated for Stage 1.
+-   **v8 (2026-10-01):** Section numbering fixed; N8R8 PSRAM wording made
+    consistent; Stage 0 notes on the mono ES8311 and PCM5102A stereo path.
+-   **v7:** EMBER added as the Stage 0 reference implementation; N8R8
+    made the preferred PICO-1 variant.

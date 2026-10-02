@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * Audio output abstraction (write-up §23 Phase 5: "audio output abstraction").
+ * Audio output abstraction (write-up §10: the TinyDAP-owned PCM pipeline).
  *
  * The player pushes interleaved PCM into a sink without knowing what is
  * behind it: ES8311 on the Cardputer-Adv, PCM5102A on the breadboard,
