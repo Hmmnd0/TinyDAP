@@ -14,6 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
+| 2026-10-02 | MP3 verified on device; aligned storage reads; SD throughput stats | *this commit* |
 | 2026-10-02 | MP3 (minimp3, ID3v2 tags), gapless playback, folder repeat | `e9dae55` |
 | 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | `e241123` |
 | 2026-10-02 | 24/96 FLAC first test: short run clean, then 503 underruns on continued play | `29548a9` |
@@ -129,8 +130,47 @@ Host results on 23 real MP3s (Deftones *Eros*, OHMS, Crest; 44.1 kHz,
 stereo): all decode fully; durations match macOS `afinfo`. ID3v2.3/2.4
 TIT2/TPE1/TALB tags read. Track length comes from the Xing/Info header
 (or a CBR estimate); encoders disagree by one frame (26 ms) on whether the
-header frame is counted. **On-device MP3 measurements pending** (files not
-yet on the card).
+header frame is counted.
+
+On device (320 kbps, 44.1 kHz stereo), compared with FLAC 16/44.1:
+
+| | MP3 320 kbps | FLAC 16/44.1 |
+|---|---|---|
+| Underruns (incl. rapid skipping through ~12 tracks) | 0 | 0 |
+| Decoder busy | 24–28% | 17–20% |
+| — SD reads | 13–15% | 7–10% |
+| — decoding (CPU) | ~12% | ~9% |
+| x realtime | 3.6–4.3x | 4.9–5.8x |
+| **Decoder stack used (24 KB task)** | **~19.7 KB** (4.8 KB free) | ~7.9 KB |
+| Internal heap free while playing | 108 KB | 82 KB |
+
+- **Device stack use matches the host measurement** (`host/stack_check`
+  reported 19.6–19.7 KB), so the host check is a good predictor.
+- MP3 tags display; untagged files fall back to the file name.
+- **Open question:** MP3 storage reads cost ~4x more time per byte than
+  FLAC's (~270 KB/s vs ~1.2 MB/s effective) although both refill a 16 KB
+  buffer. The stats line now reports read throughput and bytes per read
+  to narrow this down. Not a playback problem at 3.6x realtime.
+
+### Aligned storage reads
+
+ESP-IDF's SD-over-SPI driver reads directly into the destination only
+when its address and size are multiples of 4; otherwise
+`sdmmc_read_sectors` allocates a temporary DMA buffer **on every read**
+and copies. MP3 refills landed at arbitrary buffer offsets. Reads are now
+4-byte-aligned, whole 512-byte sectors, from a sector-aligned file
+position.
+
+| | Before | After |
+|---|---|---|
+| Heap minimum during MP3 playback | dipped to ~100 KB (per-read temporary buffers) | steady at 108 KB |
+| MP3 SD share | 13–15% | 14–15% |
+| FLAC SD share | 8–10% | 8–9% |
+
+Alignment removed the per-read allocations but **did not** change read
+time, so it was not the cause of MP3's higher read cost. Output verified
+unchanged (14 FLACs bit-identical to `afconvert`; 23 MP3s identical to the
+previous build).
 
 ### Memory
 
@@ -278,7 +318,8 @@ The bad 16 KB setting reports 18.2 KB and fails. Run it under ctest with
 - [x] Try a faster SD SPI clock: 40 MHz fails to mount; 20 MHz is the SPI-mode ceiling
 - [x] Gapless playback (same sample rate): WAV and FLAC verified
 - [x] Folder repeat (`r`)
-- [ ] MP3 on device: decode load, stack headroom, tags
+- [x] MP3 on device: 0 underruns, ~12% CPU, 19.7 KB stack (4.8 KB free), tags
+- [ ] Explain MP3's higher SD read cost per byte (throughput stats added)
 - [ ] Overnight soak with repeat on (multi-hour stability)
 - [ ] Real hi-res source material (e.g. 2L test bench) vs upsampled files
 - [ ] PCM5102A on the external I2S port: stereo, 24-bit output

@@ -26,6 +26,8 @@ typedef struct {
     uint32_t busy_us;   /* time spent decoding, including storage reads */
     uint32_t read_us;   /* time spent reading storage */
     uint32_t frames;    /* frames decoded */
+    uint32_t read_bytes;
+    uint32_t read_calls;
 } player_perf_t;
 
 void player_get_perf(player_perf_t *out);

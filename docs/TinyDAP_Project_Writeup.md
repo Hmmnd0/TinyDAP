@@ -869,7 +869,7 @@ evidence in [Stage0_Findings.md](Stage0_Findings.md).
 -   [x] FreeRTOS task architecture
 -   [x] microSD filesystem access (SPI mode, FAT32)
 -   [x] FLAC and WAV decoding (16/24-bit, up to 96 kHz)
--   [ ] MP3 decoding (minimp3 integrated and host-verified; on-device test pending)
+-   [x] MP3 decoding (minimp3, ID3v2 tags)
 -   [x] PCM buffering
 -   [x] I2S + DMA playback
 -   [x] ES8311 control over I2C

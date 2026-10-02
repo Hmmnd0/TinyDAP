@@ -64,6 +64,8 @@ static atomic_uint s_track_start;
 static atomic_uint s_busy_us;          /* time inside decoder_read */
 static atomic_uint s_read_us;          /* of which, reading storage */
 static atomic_uint s_frames_decoded;
+static atomic_uint s_read_bytes;
+static atomic_uint s_read_calls;
 
 /* Decoder-task state */
 static decoder_t *s_dec;
@@ -266,9 +268,17 @@ static void decode_chunk(void)
 {
     int64_t t0 = esp_timer_get_time();
     uint64_t r0 = decoder_read_time_us(s_dec);
+    uint64_t b0;
+    uint32_t c0;
+    decoder_read_stats(s_dec, &b0, &c0);
     size_t got = decoder_read(s_dec, s_out, DECODE_FRAMES);
     atomic_fetch_add(&s_busy_us, (unsigned)(esp_timer_get_time() - t0));
     atomic_fetch_add(&s_read_us, (unsigned)(decoder_read_time_us(s_dec) - r0));
+    uint64_t b1;
+    uint32_t c1;
+    decoder_read_stats(s_dec, &b1, &c1);
+    atomic_fetch_add(&s_read_bytes, (unsigned)(b1 - b0));
+    atomic_fetch_add(&s_read_calls, c1 - c0);
     atomic_fetch_add(&s_frames_decoded, (unsigned)got);
     if (got == 0) {
         player_status_t st;
@@ -408,4 +418,6 @@ void player_get_perf(player_perf_t *out)
     out->busy_us = atomic_load(&s_busy_us);
     out->read_us = atomic_load(&s_read_us);
     out->frames = atomic_load(&s_frames_decoded);
+    out->read_bytes = atomic_load(&s_read_bytes);
+    out->read_calls = atomic_load(&s_read_calls);
 }

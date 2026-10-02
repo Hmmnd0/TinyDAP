@@ -41,4 +41,7 @@ size_t decoder_read(decoder_t *d, int16_t *out, size_t frames);
 /* Cumulative time spent reading the file (storage), for load measurement. */
 uint64_t decoder_read_time_us(const decoder_t *d);
 
+/* Cumulative storage bytes read and read() calls, for throughput stats. */
+void decoder_read_stats(const decoder_t *d, uint64_t *bytes, uint32_t *calls);
+
 void decoder_close(decoder_t *d);

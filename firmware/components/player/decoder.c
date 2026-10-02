@@ -24,6 +24,17 @@ typedef enum { DEC_WAV, DEC_FLAC, DEC_MP3 } dec_kind_t;
  */
 #define READ_AHEAD_BYTES (16 * 1024)
 
+/*
+ * Storage reads are kept aligned: 4-byte destination, whole 512-byte
+ * sectors, from a sector-aligned file position. ESP-IDF's SD-over-SPI
+ * driver reads straight into the buffer only when address and size are
+ * multiples of 4; otherwise it allocates a temporary DMA buffer on every
+ * read and copies (measured on device: MP3 refills ran ~5x slower per byte
+ * than aligned FLAC reads). Misaligned file positions also force FatFs
+ * through its single-sector window.
+ */
+#define SECTOR 512
+
 /* MP3: refill the input window when less than this is buffered (several
  * maximum-size frames), so the decoder always sees whole frames. */
 #define MP3_REFILL_BELOW 4096
@@ -41,6 +52,8 @@ struct decoder {
     dec_kind_t kind;
     uint8_t channels;
     uint64_t read_us;           /* time spent reading the file */
+    uint64_t read_bytes;
+    uint32_t read_calls;
     /* WAV */
     FILE *file;
     uint8_t bytes_per_sample;
@@ -53,7 +66,7 @@ struct decoder {
     track_tags_t *tags_out;     /* only valid during open */
     union {
         uint8_t in[DECODER_MAX_FRAMES * 2 * 3];  /* WAV conversion input */
-        uint8_t rbuf[READ_AHEAD_BYTES];          /* FLAC read-ahead / MP3 input */
+        _Alignas(4) uint8_t rbuf[READ_AHEAD_BYTES];  /* FLAC read-ahead / MP3 input */
     };
 };
 
@@ -62,6 +75,34 @@ static uint64_t now_us(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static ssize_t timed_read(decoder_t *d, void *buf, size_t n)
+{
+    uint64_t t0 = now_us();
+    ssize_t r = read(d->fd, buf, n);
+    d->read_us += now_us() - t0;
+    d->read_calls++;
+    if (r > 0) {
+        d->read_bytes += (uint64_t)r;
+    }
+    if (r < 0) {
+        fprintf(stderr, "decoder: read error %d (%s)\n", errno, strerror(errno));
+    }
+    return r;
+}
+
+/* Bytes to read next so the file position lands on a sector boundary, or
+ * `space` rounded down to whole sectors if it already is. */
+static size_t aligned_read_size(decoder_t *d, size_t space)
+{
+    off_t pos = lseek(d->fd, 0, SEEK_CUR);
+    size_t head = pos < 0 ? 0 : (size_t)(pos % SECTOR);
+    if (head) {
+        size_t n = SECTOR - head;
+        return n < space ? n : space;
+    }
+    return space / SECTOR * SECTOR;
 }
 
 static const char *extension(const char *path)
@@ -133,6 +174,8 @@ static size_t wav_read(decoder_t *d, int16_t *out, size_t frames)
     uint64_t t0 = now_us();
     size_t got = frames ? fread(d->in, 1, frames * in_frame, d->file) / in_frame : 0;
     d->read_us += now_us() - t0;
+    d->read_calls++;
+    d->read_bytes += got * in_frame;
     d->frames_left -= (uint32_t)got;
 
     const int off = bytes - 2;  /* little-endian; for 24-bit keep the top 16 bits */
@@ -162,23 +205,10 @@ static size_t flac_on_read(void *user, void *buf, size_t n)
     decoder_t *d = user;
     uint8_t *out = buf;
     size_t done = 0;
-    uint64_t t0 = now_us();
 
     while (done < n) {
         if (d->rpos == d->rlen) {
-            if (n - done >= READ_AHEAD_BYTES) {
-                /* Large request: read straight into the caller's buffer. */
-                ssize_t r = read(d->fd, out + done, n - done);
-                if (r <= 0) {
-                    break;
-                }
-                done += (size_t)r;
-                continue;
-            }
-            ssize_t r = read(d->fd, d->rbuf, READ_AHEAD_BYTES);
-            if (r < 0) {
-                fprintf(stderr, "decoder: read error %d (%s)\n", errno, strerror(errno));
-            }
+            ssize_t r = timed_read(d, d->rbuf, aligned_read_size(d, READ_AHEAD_BYTES));
             if (r <= 0) {
                 break;
             }
@@ -193,7 +223,6 @@ static size_t flac_on_read(void *user, void *buf, size_t n)
         d->rpos += take;
         done += take;
     }
-    d->read_us += now_us() - t0;
     return done;
 }
 
@@ -401,21 +430,26 @@ static void mp3_read_id3(decoder_t *d, track_tags_t *tags)
     lseek(d->fd, tag_end, SEEK_SET);
 }
 
-/* Compacts and refills the MP3 input window. */
+/* Compacts and refills the MP3 input window, keeping reads aligned: the
+ * unread bytes are shifted so new data lands on a 4-byte boundary. */
 static void mp3_fill(decoder_t *d)
 {
     mp3_state_t *m = d->mp3;
     if (m->eof) {
         return;
     }
-    if (m->in_pos > 0) {
-        memmove(d->rbuf, d->rbuf + m->in_pos, m->in_len - m->in_pos);
-        m->in_len -= m->in_pos;
-        m->in_pos = 0;
+    size_t rem = m->in_len - m->in_pos;
+    size_t start = (4 - rem % 4) % 4;
+    if (m->in_pos != start) {
+        memmove(d->rbuf + start, d->rbuf + m->in_pos, rem);
+        m->in_pos = start;
+        m->in_len = start + rem;
     }
-    uint64_t t0 = now_us();
-    ssize_t r = read(d->fd, d->rbuf + m->in_len, READ_AHEAD_BYTES - m->in_len);
-    d->read_us += now_us() - t0;
+    size_t want = aligned_read_size(d, READ_AHEAD_BYTES - m->in_len);
+    if (want == 0) {
+        return;
+    }
+    ssize_t r = timed_read(d, d->rbuf + m->in_len, want);
     if (r <= 0) {
         m->eof = true;
     } else {
@@ -442,7 +476,12 @@ static int mp3_next_frame(decoder_t *d, mp3dec_frame_info_t *fi, const uint8_t *
             if (m->eof) {
                 return 0;
             }
-            m->in_pos = m->in_len;  /* a full window with no frame: skip it */
+            /* Not enough data for a frame yet: read more. If nothing more
+             * fits, the window is full of non-MP3 data: skip it. */
+            mp3_fill(d);
+            if (m->in_len - m->in_pos == avail) {
+                m->in_pos = m->in_len;
+            }
             continue;
         }
         if (frame) {
@@ -613,6 +652,12 @@ size_t decoder_read(decoder_t *d, int16_t *out, size_t frames)
 uint64_t decoder_read_time_us(const decoder_t *d)
 {
     return d ? d->read_us : 0;
+}
+
+void decoder_read_stats(const decoder_t *d, uint64_t *bytes, uint32_t *calls)
+{
+    *bytes = d ? d->read_bytes : 0;
+    *calls = d ? d->read_calls : 0;
 }
 
 void decoder_close(decoder_t *d)

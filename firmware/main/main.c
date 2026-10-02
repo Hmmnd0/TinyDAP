@@ -160,6 +160,8 @@ static void stats_task(void *arg)
         uint32_t busy = perf.busy_us - prev.busy_us;
         uint32_t read = perf.read_us - prev.read_us;
         uint32_t frames = perf.frames - prev.frames;
+        uint32_t rbytes = perf.read_bytes - prev.read_bytes;
+        uint32_t rcalls = perf.read_calls - prev.read_calls;
         prev = perf;
         prev_us = now;
 
@@ -168,8 +170,12 @@ static void stats_task(void *arg)
         unsigned rt10 = (busy && st.fmt.sample_rate)
             ? (unsigned)((uint64_t)frames * 10000000ull / st.fmt.sample_rate / busy) : 0;
 
-        ESP_LOGI(TAG, "state %d  pcm fill %u%%  underruns %u  decode %u%% (sd %u%%) x%u.%u realtime  heap %u (min %u)",
-                 st.state, st.buffer_pct, (unsigned)st.underruns, load, sd, rt10 / 10, rt10 % 10,
+        unsigned sd_kbps = read ? (unsigned)((uint64_t)rbytes * 1000 / read) : 0;  /* KB/s while reading */
+        unsigned per_read = rcalls ? (unsigned)(rbytes / rcalls) : 0;
+        ESP_LOGI(TAG, "state %d  pcm fill %u%%  underruns %u  decode %u%% (sd %u%%, %u KB/s, %u B/read) "
+                      "x%u.%u realtime  heap %u (min %u)",
+                 st.state, st.buffer_pct, (unsigned)st.underruns, load, sd, sd_kbps, per_read,
+                 rt10 / 10, rt10 % 10,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
         if (n % 6 == 0) {
