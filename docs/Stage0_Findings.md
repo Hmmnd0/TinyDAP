@@ -14,7 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
-| 2026-10-03 | Soak: 5 h 40 min FLAC on repeat, 0 underruns, flat heap; screen timeout + dimming | `TBD` |
+| 2026-10-03 | Soak: 5 h 40 min FLAC on repeat, 0 underruns, flat heap; screen timeout + dimming | `5dcb378` |
 | 2026-10-02 | MP3 verified on device; aligned storage reads; SD throughput stats | `97eb777` |
 | 2026-10-02 | MP3 (minimp3, ID3v2 tags), gapless playback, folder repeat | `e9dae55` |
 | 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | `e241123` |
