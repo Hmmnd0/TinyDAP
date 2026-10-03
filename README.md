@@ -8,7 +8,20 @@ high-fidelity Cirrus Logic CS43131 DAC/headphone driver, with a 0.96"
 128×64 OLED and physical buttons, targeting a custom PCB of roughly
 32 × 27 mm.
 
-**Status:** Stage 0 — FLAC and WAV playback with an SD browser UI running on the Cardputer-Adv.
+**Status:** Stage 0 — FLAC, MP3, and WAV playback (gapless, folder repeat) with an SD browser UI running on the Cardputer-Adv.
+
+## UI
+
+The 128×64 UI, rendered by the host-side simulator (`firmware/host/ui_demo`)
+from the same code that drives the Cardputer-Adv screen.
+
+Browsing the SD card, playing, pausing, and changing volume:
+
+![SD browser and Now Playing screens](docs/images/ui_browse_playback.png)
+
+MP3 with ID3 tags, auto-advance, and folder repeat (`R` in the header):
+
+![MP3 playback with repeat](docs/images/ui_mp3_repeat.png)
 
 ## Rev A hardware
 
