@@ -14,6 +14,7 @@ embedded flash, **no PSRAM**. Firmware: ESP-IDF v6.1.
 
 | Date | Milestone | Commit |
 |---|---|---|
+| 2026-10-03 | Soak: 5 h 40 min FLAC on repeat, 0 underruns, flat heap; screen timeout + dimming | `TBD` |
 | 2026-10-02 | MP3 verified on device; aligned storage reads; SD throughput stats | `97eb777` |
 | 2026-10-02 | MP3 (minimp3, ID3v2 tags), gapless playback, folder repeat | `e9dae55` |
 | 2026-10-02 | 24/96 FLAC fixed (read-ahead + 64 KB ring), decoder load instrumented | `e241123` |
@@ -237,6 +238,36 @@ style). Current decoder: ~5.9 KB on the host (~7.2 KB measured on device).
 The bad 16 KB setting reports 18.2 KB and fails. Run it under ctest with
 `cmake -DTINYDAP_TEST_FLAC=<file.flac>`.
 
+### Soak (FLAC, folder repeat)
+
+Discovery (16/44.1 FLAC, 14 tracks, ~61 min) on folder repeat, gapless,
+from one boot (firmware `9d473df`). Last reading before the monitor was
+closed: **20,401 s uptime (5 h 40 min)**, about 5½ album passes and ~80
+track changes.
+
+| Metric | Value |
+|---|---|
+| Underruns | **0** |
+| Free internal heap | 82,056 B throughout; minimum since boot 81,692 B (unchanged after hour 1) |
+| Task stacks (free) | decoder 16,484, audio_out 3,288, ui 4,504, input 1,744, stats 2,144: unchanged all run |
+| PCM ring fill | 84–99% |
+| Decoder load | 16–29%, x3.3–6 realtime |
+| SD reads | 16 KB per call; ~1,450 KB/s typical, dipping to 300–950 KB/s for 5–15 s a few times per track |
+
+The slow SD stretches never reached the ring (fill stayed ≥84%); likely
+card-internal housekeeping or fragmentation. 32-bit perf counters wrap
+(the µs counters every 71 min) but are only used as differences, so the
+wraps are harmless, and several occurred during the run.
+
+Remaining stability tests: a mixed-format folder (MP3, FLAC 16/44.1 and
+24/96, WAV) on repeat, button-mashing during playback, and battery power.
+
+**Screen:** after ~5½ h of the static Now Playing screen, the ST7789 LCD
+showed image retention (a ghost of the screen) when turned back on with
+`o`. Temporary on an LCD, but it would be permanent burn-in on the Rev A
+OLED. Added a 30 s inactivity screen-off and 50% default backlight (PWM on
+GPIO 38, 256 Hz as M5GFX drives it); see write-up §8.
+
 ### Decoder correctness
 
 - All 14 tracks of a 16/44.1 FLAC album decoded by TinyDAP's decoder
@@ -320,7 +351,8 @@ The bad 16 KB setting reports 18.2 KB and fails. Run it under ctest with
 - [x] Folder repeat (`r`)
 - [x] MP3 on device: 0 underruns, ~12% CPU, 19.7 KB stack (4.8 KB free), tags
 - [ ] Explain MP3's higher SD read cost per byte (throughput stats added)
-- [ ] Overnight soak with repeat on (multi-hour stability)
+- [x] Multi-hour soak with repeat on: 5 h 40 min, 0 underruns, flat heap
+- [ ] Mixed-format soak (MP3 / FLAC 16-44.1 / FLAC 24-96 / WAV), button stress, battery power
 - [ ] Real hi-res source material (e.g. 2L test bench) vs upsampled files
 - [ ] PCM5102A on the external I2S port: stereo, 24-bit output
 - [ ] MP3 via minimp3

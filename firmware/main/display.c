@@ -4,6 +4,7 @@
 
 #include "board_cardputer_adv.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -21,6 +22,13 @@ static const char *TAG = "display";
 #define PIX_ON  0xFFFF
 #define PIX_OFF 0x0000
 
+/* Backlight PWM, as M5GFX drives it on this board: 256 Hz, and a duty floor
+ * below which the backlight is effectively dark. */
+#define BL_TIMER    LEDC_TIMER_0
+#define BL_CHANNEL  LEDC_CHANNEL_0
+#define BL_FREQ_HZ  256
+#define BL_MIN_DUTY 16
+
 static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_px;              /* DMA buffer, BOARD_LCD_W x OUT_H */
 static SemaphoreHandle_t s_idle;    /* given when the last transfer finished */
@@ -28,6 +36,17 @@ static uint8_t s_src_x[BOARD_LCD_W];
 static fb_t s_last;
 static bool s_have_last;
 static bool s_on = true;
+static uint8_t s_brightness = 100;  /* percent */
+
+static void backlight_apply(void)
+{
+    uint32_t duty = 0;
+    if (s_on && s_brightness > 0) {
+        duty = BL_MIN_DUTY + (255 - BL_MIN_DUTY) * s_brightness / 100;
+    }
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, BL_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, BL_CHANNEL);
+}
 
 static bool on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *ctx)
 {
@@ -44,9 +63,23 @@ static void draw(int y0, int y1)
 
 esp_err_t display_init(void)
 {
-    gpio_config_t bl = { .pin_bit_mask = 1ULL << BOARD_LCD_BL, .mode = GPIO_MODE_OUTPUT };
-    gpio_config(&bl);
-    gpio_set_level(BOARD_LCD_BL, 1);
+    ledc_timer_config_t timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .timer_num = BL_TIMER,
+        .freq_hz = BL_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ESP_RETURN_ON_ERROR(ledc_timer_config(&timer), TAG, "backlight timer");
+    ledc_channel_config_t ch = {
+        .gpio_num = BOARD_LCD_BL,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = BL_CHANNEL,
+        .timer_sel = BL_TIMER,
+        .duty = 0,
+    };
+    ESP_RETURN_ON_ERROR(ledc_channel_config(&ch), TAG, "backlight channel");
+    backlight_apply();
 
     spi_bus_config_t bus = {
         .mosi_io_num = BOARD_LCD_MOSI,
@@ -109,9 +142,15 @@ void display_set_on(bool on)
         return;
     }
     s_on = on;
-    gpio_set_level(BOARD_LCD_BL, on);
+    backlight_apply();
     esp_lcd_panel_disp_on_off(s_panel, on);
     s_have_last = false;  /* redraw on the next frame after turning on */
+}
+
+void display_set_brightness(uint8_t percent)
+{
+    s_brightness = percent > 100 ? 100 : percent;
+    backlight_apply();
 }
 
 bool display_is_on(void)

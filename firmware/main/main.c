@@ -34,6 +34,11 @@ static const char *TAG = "tinydap";
 #define REPEAT_DELAY_MS   400
 #define REPEAT_RATE_MS    80
 
+/* Burn-in protection, aimed at the Rev A OLED: dim by default and turn the
+ * screen off after a period without input. 0 disables the timeout. */
+#define SCREEN_BRIGHTNESS_PCT 50
+#define SCREEN_TIMEOUT_MS     30000
+
 #define PRIO_INPUT  8
 #define PRIO_UI     5
 #define PRIO_STATS  2
@@ -126,20 +131,41 @@ static void input_task(void *arg)
 
 /* ---------- UI ---------- */
 
+/* Playback controls still act while the screen is off, as on a DAP in a
+ * pocket; any other key only wakes the screen. */
+static bool works_screen_off(ui_input_t in)
+{
+    return in == UI_PLAY_PAUSE || in == UI_NEXT || in == UI_PREV ||
+           in == UI_VOL_UP || in == UI_VOL_DOWN;
+}
+
 static void ui_task(void *arg)
 {
     player_status_t st;
+    uint32_t last_input = now_ms();
     for (;;) {
         ui_input_t in;
         bool got = xQueueReceive(s_inputs, &in, pdMS_TO_TICKS(UI_FRAME_MS)) == pdTRUE;
         player_get_status(&st);
         while (got) {
-            ui_app_input(&s_app, in, &st, now_ms());
-            player_get_status(&st);
+            bool on = display_is_on();
+            if (on || works_screen_off(in)) {
+                ui_app_input(&s_app, in, &st, now_ms());
+                player_get_status(&st);
+            }
+            if (on || !works_screen_off(in)) {
+                display_set_on(true);
+                last_input = now_ms();
+            }
             got = xQueueReceive(s_inputs, &in, 0) == pdTRUE;
         }
         if (atomic_exchange(&s_toggle_screen, false)) {
             display_set_on(!display_is_on());
+            last_input = now_ms();
+        }
+        if (SCREEN_TIMEOUT_MS && display_is_on() &&
+            now_ms() - last_input >= SCREEN_TIMEOUT_MS) {
+            display_set_on(false);
         }
         ui_app_tick(&s_app, &st, now_ms());
         ui_app_render(&s_app, &s_fb, &st, now_ms());
@@ -225,6 +251,7 @@ void app_main(void)
     if (display_init() != ESP_OK) {
         ESP_LOGE(TAG, "display init failed");
     }
+    display_set_brightness(SCREEN_BRIGHTNESS_PCT);
     bool sd_ok = sdcard_mount();
 
     /* The ES8311 is mono: fold stereo into it rather than dropping a channel. */

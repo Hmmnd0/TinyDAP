@@ -5,7 +5,7 @@
 **Status:** Stage 0 in progress. FLAC/WAV playback with an SD-card
 browser UI runs on the Cardputer-Adv; Stage 1 breadboard parts are next.
 Measurements: [Stage0_Findings.md](Stage0_Findings.md)\
-**Revision:** v10, 2026-10-02 (see Revision history at the end)\
+**Revision:** v11, 2026-10-03 (see Revision history at the end)\
 **Primary goal:** Build a very small battery-powered digital audio
 player capable of true local lossless playback from microSD, with a
 monochrome OLED, physical controls, high-quality wired headphone output,
@@ -390,6 +390,24 @@ Framebuffer calculation:
 ```
 
 The display therefore has essentially negligible RAM impact.
+
+### Burn-in protection
+
+OLEDs burn in permanently, and the Now Playing screen is close to the
+worst case: fixed text and a solid header bar in the same pixels for the
+length of an album. Stage 0 showed temporary image retention on the
+Cardputer's LCD after about 5½ hours of that screen; on the OLED this would
+be permanent wear. The firmware therefore:
+
+-   **Turns the screen off after inactivity** (30 s default, configurable).
+    Playback controls (play/pause, next/previous, volume) work with the
+    screen off; any other button wakes it.
+-   **Runs below full brightness by default** (50%). On the SSD1306 this
+    is the contrast register (`0x81`); on the Stage 0 LCD it is backlight
+    PWM.
+
+Both also reduce battery draw. Pixel shifting and avoiding large solid
+white areas remain options if retention shows up in Stage 1 OLED testing.
 
 ### Prototype display
 
@@ -880,7 +898,7 @@ evidence in [Stage0_Findings.md](Stage0_Findings.md).
 -   [x] playback state machine and track changes
 -   [x] gapless playback for same-sample-rate tracks (FLAC, WAV)
 -   [x] underrun detection
--   [ ] long-duration playback stability (multi-hour soak)
+-   [x] long-duration playback stability (multi-hour soak)
 -   [x] memory and task-stack measurements
 -   [x] UI architecture (128 × 64 framebuffer, scaled onto the LCD)
 -   [x] input/event architecture
@@ -1887,6 +1905,9 @@ is the main cost.
 
 ## Revision history
 
+-   **v11 (2026-10-03):** OLED burn-in protection added to §8 (screen
+    timeout, reduced default brightness), prompted by LCD image retention
+    seen during the Stage 0 soak. Multi-hour soak marked complete in §17.
 -   **v10 (2026-10-02):** Findings from the Rev A datasheets
     ([RevA_Parts_Pinouts.md](RevA_Parts_Pinouts.md)): level translation
     is required for I²S, MCLK, and I²C because CS43131 logic is 1.8 V only

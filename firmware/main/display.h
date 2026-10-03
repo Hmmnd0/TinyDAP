@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 #include "tinydap/fb.h"
 
@@ -16,3 +19,7 @@ void display_show(const fb_t *fb);
 /* Backlight and panel on/off. */
 void display_set_on(bool on);
 bool display_is_on(void);
+
+/* Backlight level, 0-100%. The Rev A SSD1306 has no backlight; the same
+ * setting maps to its contrast register there. */
+void display_set_brightness(uint8_t percent);

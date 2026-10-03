@@ -53,7 +53,7 @@ SD-read share, and speed vs real time), and free internal heap; every 30 s,
 per-task stack headroom. Results are tracked in
 [docs/Stage0_Findings.md](../docs/Stage0_Findings.md).
 
-Next: on-device MP3 measurements and an overnight soak test.
+Next: a mixed-format soak, button-stress testing, and the PCM5102A for stereo.
 
 ### Controls (Cardputer-Adv)
 
@@ -68,6 +68,11 @@ Next: on-device MP3 measurements and an overnight soak test.
 | `m` | Browser ↔ Now Playing |
 | `r` | Folder repeat on/off |
 | `o` | Screen off/on |
+
+The screen runs at 50% backlight and turns off after 30 s without input
+(`SCREEN_BRIGHTNESS_PCT` and `SCREEN_TIMEOUT_MS` in `main/main.c`). While it
+is off, play/pause, next/previous, and volume still work without waking it;
+any other key only wakes the screen.
 
 ### Preparing an SD card
 
