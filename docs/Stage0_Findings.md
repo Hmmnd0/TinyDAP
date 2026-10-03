@@ -267,6 +267,8 @@ showed image retention (a ghost of the screen) when turned back on with
 `o`. Temporary on an LCD, but it would be permanent burn-in on the Rev A
 OLED. Added a 30 s inactivity screen-off and 50% default backlight (PWM on
 GPIO 38, 256 Hz as M5GFX drives it); see write-up §8.
+Verified on device: dimming, 30 s timeout, playback keys working with the
+screen off, and wake keys not acting on the UI.
 
 ### Decoder correctness
 
