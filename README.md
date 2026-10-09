@@ -68,6 +68,7 @@ hardware/   Schematics and PCB (not started)
 - **Design and specification:** [docs/TinyDAP_Project_Writeup.md](docs/TinyDAP_Project_Writeup.md)
 - **Stage 0 measurements and findings:** [docs/Stage0_Findings.md](docs/Stage0_Findings.md)
 - **Rev A part pinouts and links:** [docs/RevA_Parts_Pinouts.md](docs/RevA_Parts_Pinouts.md)
+- **Stage 1 breadboard wiring:** [docs/Stage1_Wiring.md](docs/Stage1_Wiring.md)
 - **Building and flashing the firmware:** [firmware/README.md](firmware/README.md)
 
 ## Firmware at a glance
