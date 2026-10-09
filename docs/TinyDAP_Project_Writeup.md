@@ -5,7 +5,7 @@
 **Status:** Stage 0 in progress. FLAC/WAV playback with an SD-card
 browser UI runs on the Cardputer-Adv; Stage 1 breadboard parts are next.
 Measurements: [Stage0_Findings.md](Stage0_Findings.md)\
-**Revision:** v11, 2026-10-03 (see Revision history at the end)\
+**Revision:** v12, 2026-10-09 (see Revision history at the end)\
 **Primary goal:** Build a very small battery-powered digital audio
 player capable of true local lossless playback from microSD, with a
 monochrome OLED, physical controls, high-quality wired headphone output,
@@ -623,9 +623,20 @@ Do not make Bluetooth audio a requirement for the first prototype.
 Instead:
 
 -   Preserve spare I²S-capable GPIOs.
--   Consider exposing an I²S expansion header/test pads.
+-   **Required:** expose the I²S output (BCLK, LRCK, DATA, plus MCLK if
+    used), 3.3 V, and GND on pads so a Bluetooth-audio module can be added
+    in Rev B without re-routing the ESP32 side. The firmware's audio
+    output already supports more than one sink.
 -   Prove local wired playback first.
 -   Add a Bluetooth-audio subsystem after the basic DAP is stable.
+
+### Wireless headphones in the meantime
+
+The use case is occasional wireless listening, not Bluetooth as a core
+feature. Until a Bluetooth-audio subsystem exists, a plug-in 3.5 mm
+Bluetooth transmitter on the headphone output covers it with no design
+work. Bluetooth codecs are lossy either way, so the extra analog step
+costs little in practice.
 
 The S3's own BLE can still be useful for control/configuration even if
 it is not used for headphone audio.
@@ -1905,6 +1916,9 @@ is the main cost.
 
 ## Revision history
 
+-   **v12 (2026-10-09):** §12: I²S expansion pads for a later
+    Bluetooth-audio module are now a Rev A requirement; plug-in 3.5 mm
+    transmitter recorded as the interim path for wireless headphones.
 -   **v11 (2026-10-03):** OLED burn-in protection added to §8 (screen
     timeout, reduced default brightness), prompted by LCD image retention
     seen during the Stage 0 soak. Multi-hour soak marked complete in §17.
