@@ -7,6 +7,14 @@ Pin numbers are **GPIO numbers**, as printed next to each header pin on the
 DevKitC-1. Header order is from Espressif's
 [DevKitC-1 v1.1 user guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html).
 
+## Board in use
+
+The DevKit on hand is an **ESP32-S3-DevKitC-1 clone with an N16R8 module**
+(16 MB flash, 8 MB octal PSRAM); the seller shipped it in place of the N8R8
+that was ordered. PSRAM type and reserved pins are the same as N8R8. The
+firmware is built for 8 MB flash so everything tested here fits Rev A's
+PICO-1-N8R8. This clone's RGB LED is on GPIO 48 (silkscreen "RGB@IO48").
+
 ## Pins to avoid
 
 | GPIO | Why |
