@@ -356,6 +356,8 @@ screen off, and wake keys not acting on the UI.
 - [x] Multi-hour soak with repeat on: 5 h 40 min, 0 underruns, flat heap
 - [ ] Mixed-format soak (MP3 / FLAC 16-44.1 / FLAC 24-96 / WAV), button stress, battery power
 - [ ] Real hi-res source material (e.g. 2L test bench) vs upsampled files
-- [ ] PCM5102A on the external I2S port: stereo, 24-bit output
+- [x] PCM5102A stereo: verified on the Stage 1 breadboard (left-only and
+      right-only tones, FLAC playback), see Stage1_Wiring.md
+- [ ] PCM5102A 24-bit output (decoder still truncates to 16-bit)
 - [ ] MP3 via minimp3
 - [ ] SD read latency worst case (fragmented card), Wi-Fi active during playback

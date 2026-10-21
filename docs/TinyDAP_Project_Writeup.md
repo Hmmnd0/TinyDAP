@@ -902,7 +902,8 @@ evidence in [Stage0_Findings.md](Stage0_Findings.md).
 -   [x] PCM buffering
 -   [x] I2S + DMA playback
 -   [x] ES8311 control over I2C
--   [ ] stereo output through an external PCM5102A on the second I2S port
+-   [x] stereo output through an external PCM5102A (verified 2026-10-21 on
+    the Stage 1 DevKitC-1 breadboard rather than the Cardputer's port)
 -   [x] metadata parsing (FLAC Vorbis comments)
 -   [x] directory handling and folder play queue
 -   [ ] playlist files
