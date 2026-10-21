@@ -23,7 +23,7 @@ DevKitC-1. Header order is from Espressif's
 
 | PCM5102A pin | Connect to | Notes |
 |---|---|---|
-| VIN / VCC | **5V** | The board has its own 3.3 V regulator |
+| VIN / VCC | **3.3V** (+ rail) | On the N8R8 clone, 5Vin is dead when powered from the native USB port; the PCM5102A runs fine on 3.3 V |
 | GND | GND | |
 | BCK | GPIO **5** | Bit clock |
 | LCK | GPIO **6** | Word (left/right) clock |
@@ -105,7 +105,7 @@ The groups line up with the header so the wires stay short:
  OLED D0  12                               21  SD DET
  OLED RES 13                               20  (USB)
           14                               19  (USB)
-          5V  ── DAC VIN                   GND
+          5V  (unused)                     GND
           GND ── GND rail                  GND
 ```
 
@@ -113,13 +113,12 @@ The groups line up with the header so the wires stay short:
    room on both sides. Put two breadboards side by side and straddle the
    board across the join, so each header row has free holes next to it.
 2. **Power rails:** run **3V3** to one rail and **GND** to the other. The
-   OLED, SD breakout, and DAC jumpers take power from there; the DAC's VIN
-   goes to **5V** directly.
+   OLED, SD breakout, and DAC all take power from there.
 3. **Placement:** put the DAC and OLED on the J1 side, the SD breakout on
    the J3 side next to GPIO 39–42, and the buttons along the free edge of
    the J1 board.
-4. **Before powering:** check that nothing connects to 5 V except the DAC's
-   VIN, and that 3V and VCC on the SD breakout and OLED go to 3.3 V.
+4. **Before powering:** check that nothing connects to 5 V, and that the
+   DAC's VIN, the SD breakout's 3V and the OLED's VDD go to 3.3 V.
 
 ## Bring-up order
 
@@ -169,3 +168,6 @@ rewrites changed sectors) once wrote the app at the wrong offset after a
 verify failure; if a flash log shows "Verification failed after fast
 reflash", erase the app partition (`esptool erase-region 0x10000 0x200000`)
 and flash again, then check with `esptool verify-flash`.
+
+Verified 2026-10-21 on the N8R8 board: FLAC playback heard through the
+PCM5102A with VIN on 3.3 V (with VIN on 5Vin the DAC had no power).
