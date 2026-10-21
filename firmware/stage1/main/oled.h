@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -10,3 +11,6 @@
 esp_err_t oled_init(void);
 void oled_show(const fb_t *fb);
 void oled_set_contrast(uint8_t level);
+
+/* Panel on/off (sleep). The frame in its RAM is kept. */
+void oled_set_on(bool on);

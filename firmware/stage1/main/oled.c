@@ -83,3 +83,9 @@ void oled_show(const fb_t *fb)
     cmd(window, sizeof window);
     send(true, fb->buf, sizeof fb->buf);
 }
+
+void oled_set_on(bool on)
+{
+    uint8_t c = on ? 0xAF : 0xAE;
+    cmd(&c, 1);
+}

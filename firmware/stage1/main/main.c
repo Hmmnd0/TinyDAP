@@ -1,265 +1,279 @@
 /*
- * TinyDAP Stage 1 bring-up on the ESP32-S3-DevKitC-1 breadboard.
+ * TinyDAP Stage 1 on the ESP32-S3-DevKitC-1 breadboard (docs/Stage1_Wiring.md).
  *
- * Checks each part of docs/Stage1_Wiring.md before the full player is
- * ported: the OLED shows a status screen, every button press is shown and
- * logged, and the PCM5102A plays a test tone.
+ * The same player and UI as Stage 0 (components/ui, ../main/player.c), on
+ * the final kind of hardware: SSD1306 OLED, five buttons, PCM5102A stereo,
+ * microSD over 4-bit SDMMC. If the card doesn't mount, the browser opens
+ * the test audio built into flash (flash_data/) instead.
  *
- * If flash_data/ held audio at build time, it is mounted read-only at
- * /flash and the first file plays on repeat through the real decoder.
- *
- *   Play  pause / resume
- *   Next  music -> tone: both -> tone: left only -> tone: right only
- *   Prev  restart the track (tone mode: change frequency)
- *   Vol+  / Vol-  level in 3 dB steps
+ * Buttons, browser:      Vol+/Vol- up/down (hold to scroll), Next open/play,
+ *                        Prev back, Play play/pause, hold Play: Now Playing
+ * Buttons, Now Playing:  Vol+/Vol- volume, Next/Prev track, Play play/pause,
+ *                        hold Play: browser, hold Next: repeat on/off
  */
 
 #include <math.h>
 #include <stdatomic.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "board_devkitc.h"
 #include "buttons.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_vfs_fat.h"
 #include "esp_timer.h"
+#include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "i2s_sink.h"
 #include "oled.h"
-#include "tinydap/fb.h"
-#include "tinydap/browser.h"
-#include "tinydap/decoder.h"
-#include "tinydap/tone.h"
+#include "player.h"
+#include "sdcard.h"
+#include "tinydap/ui_app.h"
 
-static const char *TAG = "stage1";
+static const char *TAG = "tinydap";
 
-#define SAMPLE_RATE 44100
-#define CHUNK_FRAMES 256
+#define DEFAULT_VOLUME_DB   (-20)
+#define UI_FRAME_MS         33
+#define FLASH_MOUNT         "/flash"
 
-typedef enum { MODE_MUSIC, OUT_BOTH, OUT_LEFT, OUT_RIGHT } out_mode_t;
-static const char *OUT_NAME[] = { "Music", "Tone L+R", "Tone left", "Tone right" };
-static const float FREQS[] = { 440.0f, 1000.0f, 220.0f };
+/* Burn-in protection (write-up §8): dim, and off after inactivity. */
+#define OLED_CONTRAST       0x7F
+#define SCREEN_TIMEOUT_MS   30000
 
-static atomic_bool s_on = true;
-static atomic_int s_out = OUT_BOTH;
-static atomic_bool s_restart;
-static atomic_uint s_played;       /* frames of the current track */
-static char s_track[256];          /* empty: no music in flash */
-static decoder_info_t s_info;
-static atomic_int s_freq_i = 0;
-static atomic_int s_level_db = -24;  /* gentle on headphones */
+#define PRIO_INPUT  8
+#define PRIO_UI     5
+#define PRIO_STATS  2
+#define CORE_SYSTEM 0
 
-static void apply_gain(int16_t *buf, size_t samples, int db)
+static ui_app_t s_app;
+static fb_t s_fb;
+
+static uint32_t now_ms(void)
 {
-    float g = powf(10.0f, db / 20.0f);
-    for (size_t i = 0; i < samples; i++) buf[i] = (int16_t)(buf[i] * g);
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
-static void find_track(void)
+/* ---------- digital volume ---------- */
+
+/* The PCM5102A has no volume control, so gain is applied in software on
+ * the way to I2S. Rev A's CS43131 will do this in hardware. */
+typedef struct {
+    audio_sink_t base;
+    audio_sink_t *out;
+} gain_sink_t;
+
+static atomic_int s_gain_q15 = 32767;  /* gain as Q15 */
+
+static int gain_open(audio_sink_t *self, const audio_format_t *fmt)
 {
-    static browser_t b;  /* ~26 KB, keep it off the stack */
-    if (browser_load(&b, "/flash") != 0) return;
-    for (int i = 0; i < b.count; i++) {
-        if (browser_kind(&b, i) != ENTRY_DIR && browser_entry_path(&b, i, s_track, sizeof s_track)) {
-            return;
-        }
-    }
-    s_track[0] = '\0';
+    gain_sink_t *g = self->ctx;
+    return g->out->open(g->out, fmt);
 }
 
-static void audio_task(void *arg)
+static int gain_write(audio_sink_t *self, const void *data, size_t len, uint32_t timeout_ms)
 {
-    audio_sink_t *sink = arg;
-    audio_format_t fmt = { SAMPLE_RATE, 16, 2 };
-    if (sink->open(sink, &fmt) != 0) {
-        ESP_LOGE(TAG, "I2S open failed");
-        vTaskDelete(NULL);
+    gain_sink_t *g = self->ctx;
+    int32_t q = atomic_load(&s_gain_q15);
+    if (q >= 32767) {
+        return g->out->write(g->out, data, len, timeout_ms);
     }
-    static int16_t buf[DECODER_MAX_FRAMES * 2];
-    tone_t tone;
-    int freq_i = -1;
-    decoder_t *dec = NULL;
+    /* Scale a copy: the caller may retry the unwritten tail of its buffer. */
+    static int16_t tmp[1024];
+    size_t n = len < sizeof tmp ? len : sizeof tmp;
+    const int16_t *src = data;
+    for (size_t i = 0; i < n / 2; i++) {
+        tmp[i] = (int16_t)((src[i] * q) >> 15);
+    }
+    return g->out->write(g->out, tmp, n, timeout_ms);
+}
+
+static void gain_close(audio_sink_t *self)
+{
+    gain_sink_t *g = self->ctx;
+    g->out->close(g->out);
+}
+
+static audio_sink_t *gain_sink_create(audio_sink_t *out)
+{
+    gain_sink_t *g = calloc(1, sizeof *g);
+    g->out = out;
+    g->base = (audio_sink_t){ gain_open, gain_write, gain_close, g };
+    return &g->base;
+}
+
+static void set_volume_db(int db)
+{
+    atomic_store(&s_gain_q15, db >= 0 ? 32767 : (int)(32767.0f * powf(10.0f, db / 20.0f)));
+}
+
+/* ---------- player ops for the UI ---------- */
+
+static void ops_play(void *ctx, const char *path) { player_play(path); }
+static void ops_toggle_pause(void *ctx) { player_toggle_pause(); }
+static void ops_stop(void *ctx) { player_stop(); }
+static void ops_volume(void *ctx, int db) { set_volume_db(db); }
+static void ops_set_next(void *ctx, const char *path) { player_set_next(path); }
+
+/* ---------- input: five buttons -> UI events ---------- */
+
+static QueueHandle_t s_raw;  /* button_event_t, mapped in the UI task (it knows the view) */
+
+static void input_task(void *arg)
+{
     for (;;) {
-        bool on = atomic_load(&s_on);
-        int out = atomic_load(&s_out);
-        int level = atomic_load(&s_level_db);
-        size_t frames = CHUNK_FRAMES;
-
-        if (out == MODE_MUSIC && s_track[0]) {
-            if (atomic_exchange(&s_restart, false) && dec) {
-                decoder_close(dec);
-                dec = NULL;
-            }
-            if (!dec) {
-                const char *err = "";
-                dec = decoder_open(s_track, &s_info, &err);
-                if (!dec) {
-                    ESP_LOGE(TAG, "open %s: %s", s_track, err);
-                    atomic_store(&s_out, OUT_BOTH);
-                    continue;
-                }
-                atomic_store(&s_played, 0);
-                if (s_info.fmt.sample_rate != fmt.sample_rate) {
-                    fmt.sample_rate = s_info.fmt.sample_rate;
-                    sink->open(sink, &fmt);
-                }
-                ESP_LOGI(TAG, "playing %s (%s %u Hz)", s_track, s_info.codec, (unsigned)fmt.sample_rate);
-            }
-            if (!on) {
-                memset(buf, 0, CHUNK_FRAMES * 4);
-            } else {
-                frames = decoder_read(dec, buf, DECODER_MAX_FRAMES);
-                if (frames == 0) {  /* end of track: loop */
-                    decoder_close(dec);
-                    dec = NULL;
-                    continue;
-                }
-                atomic_fetch_add(&s_played, frames);
-                apply_gain(buf, frames * 2, level);
-            }
-        } else {
-            if (dec) {
-                decoder_close(dec);
-                dec = NULL;
-            }
-            if (fmt.sample_rate != SAMPLE_RATE) {
-                fmt.sample_rate = SAMPLE_RATE;
-                sink->open(sink, &fmt);
-            }
-            if (freq_i != atomic_load(&s_freq_i)) {
-                freq_i = atomic_load(&s_freq_i);
-                tone_init(&tone, SAMPLE_RATE, FREQS[freq_i], 1.0f);
-            }
-            tone_fill_s16_stereo(&tone, buf, CHUNK_FRAMES);
-            apply_gain(buf, CHUNK_FRAMES * 2, level);
-            for (int i = 0; i < CHUNK_FRAMES; i++) {
-                if (!on || out == OUT_RIGHT) buf[2 * i] = 0;
-                if (!on || out == OUT_LEFT) buf[2 * i + 1] = 0;
-            }
+        button_event_t e = buttons_poll(now_ms());
+        if (e.ev != BTN_EV_NONE) {
+            ESP_LOGI(TAG, "button %s %s", button_name(e.button),
+                     e.ev == BTN_EV_LONG ? "long" : e.ev == BTN_EV_REPEAT ? "repeat" : "short");
+            xQueueSend(s_raw, &e, 0);
         }
-        sink->write(sink, buf, frames * 4, 100);
+        vTaskDelay(pdMS_TO_TICKS(BUTTONS_POLL_MS));
     }
 }
 
-static void draw(fb_t *fb, button_t last, uint32_t presses)
+/* Returns false if the event maps to nothing. */
+static bool map_button(button_event_t e, ui_view_t view, ui_input_t *out)
 {
-    char line[40];
-    fb_clear(fb);
-    if (atomic_load(&s_out) == MODE_MUSIC && s_track[0]) {
-        fb_fill_rect(fb, 0, 0, FB_W, 10, true);
-        fb_text(fb, 2, 1, atomic_load(&s_on) ? "Now Playing" : "Paused", FB_W - 4, false);
-        fb_text(fb, 2, 14, s_info.tags.title[0] ? s_info.tags.title : "Unknown", FB_W - 4, true);
-        fb_text(fb, 2, 23, s_info.tags.artist, FB_W - 4, true);
-        fb_text(fb, 2, 32, s_info.tags.album, FB_W - 4, true);
-        uint32_t rate = s_info.fmt.sample_rate ? s_info.fmt.sample_rate : SAMPLE_RATE;
-        uint32_t el = atomic_load(&s_played) / rate, tot = s_info.total_frames / rate;
-        int w = tot ? (int)((FB_W - 4) * (uint64_t)el / tot) : 0;
-        fb_rect(fb, 2, 43, FB_W - 4, 5, true);
-        fb_fill_rect(fb, 2, 43, w, 5, true);
-        snprintf(line, sizeof line, "%u:%02u/%u:%02u  %ddB", (unsigned)(el / 60), (unsigned)(el % 60),
-                 (unsigned)(tot / 60), (unsigned)(tot % 60), atomic_load(&s_level_db));
-        fb_text(fb, 2, 54, line, FB_W - 4, true);
-        return;
-    }
-    fb_fill_rect(fb, 0, 0, FB_W, 10, true);
-    fb_text(fb, 2, 1, "TinyDAP Stage 1", FB_W - 4, false);
-
-    snprintf(line, sizeof line, "Tone %4d Hz  %s", (int)FREQS[atomic_load(&s_freq_i)],
-             atomic_load(&s_on) ? "ON" : "off");
-    fb_text(fb, 2, 13, line, FB_W - 4, true);
-    snprintf(line, sizeof line, "Mode %s", OUT_NAME[atomic_load(&s_out)]);
-    fb_text(fb, 2, 22, line, FB_W - 4, true);
-    snprintf(line, sizeof line, "Level %d dB", atomic_load(&s_level_db));
-    fb_text(fb, 2, 31, line, FB_W - 4, true);
-    snprintf(line, sizeof line, "Last %s (GPIO %d) x%u", button_name(last), button_gpio(last),
-             (unsigned)presses);
-    fb_text(fb, 2, 40, line, FB_W - 4, true);
-
-    /* Live button state: filled box = held down */
-    static const char *lbl[BTN_COUNT] = { "P", "<", ">", "+", "-" };
-    for (int i = 0; i < BTN_COUNT; i++) {
-        int x = 4 + i * 25;
-        if (button_is_down((button_t)i)) {
-            fb_fill_rect(fb, x, 52, 20, 11, true);
-            fb_text(fb, x + 7, 54, lbl[i], 10, false);
+    bool browser = view == VIEW_BROWSER;
+    switch (e.button) {
+    case BTN_VOLUP: *out = browser ? UI_UP : UI_VOL_UP; return true;
+    case BTN_VOLDN: *out = browser ? UI_DOWN : UI_VOL_DOWN; return true;
+    case BTN_PLAY: *out = e.ev == BTN_EV_LONG ? UI_VIEW_TOGGLE : UI_PLAY_PAUSE; return true;
+    case BTN_NEXT:
+        if (e.ev == BTN_EV_LONG) {
+            *out = UI_REPEAT;
         } else {
-            fb_rect(fb, x, 52, 20, 11, true);
-            fb_text(fb, x + 7, 54, lbl[i], 10, true);
+            *out = browser ? UI_SELECT : UI_NEXT;
         }
+        return true;
+    case BTN_PREV:
+        if (e.ev == BTN_EV_LONG) {
+            return false;
+        }
+        *out = browser ? UI_BACK : UI_PREV;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* ---------- UI ---------- */
+
+static void ui_task(void *arg)
+{
+    player_status_t st;
+    bool screen_on = true;
+    uint32_t last_input = now_ms();
+    for (;;) {
+        button_event_t e;
+        bool got = xQueueReceive(s_raw, &e, pdMS_TO_TICKS(UI_FRAME_MS)) == pdTRUE;
+        player_get_status(&st);
+        while (got) {
+            /* With the screen off, Now Playing's buttons still control
+             * playback (a DAP in a pocket); in the browser a press only
+             * wakes the screen. */
+            bool act = screen_on || s_app.view == VIEW_NOW_PLAYING;
+            ui_input_t in;
+            if (act && map_button(e, s_app.view, &in)) {
+                ui_app_input(&s_app, in, &st, now_ms());
+                player_get_status(&st);
+            }
+            if (screen_on || !act) {
+                if (!screen_on) {
+                    oled_set_on(true);
+                    screen_on = true;
+                }
+                last_input = now_ms();
+            }
+            got = xQueueReceive(s_raw, &e, 0) == pdTRUE;
+        }
+        if (SCREEN_TIMEOUT_MS && screen_on && now_ms() - last_input >= SCREEN_TIMEOUT_MS) {
+            oled_set_on(false);
+            screen_on = false;
+        }
+        ui_app_tick(&s_app, &st, now_ms());
+        if (screen_on) {
+            ui_app_render(&s_app, &s_fb, &st, now_ms());
+            oled_show(&s_fb);
+        }
+    }
+}
+
+/* Logs the §18 "What to measure" numbers every 5 s (as on Stage 0). */
+static void stats_task(void *arg)
+{
+    player_perf_t prev;
+    player_get_perf(&prev);
+    int64_t prev_us = esp_timer_get_time();
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        player_status_t st;
+        player_perf_t perf;
+        player_get_status(&st);
+        player_get_perf(&perf);
+        int64_t now = esp_timer_get_time();
+        uint32_t wall = (uint32_t)(now - prev_us);
+        uint32_t busy = perf.busy_us - prev.busy_us;
+        uint32_t read = perf.read_us - prev.read_us;
+        uint32_t frames = perf.frames - prev.frames;
+        uint32_t rbytes = perf.read_bytes - prev.read_bytes;
+        uint32_t rcalls = perf.read_calls - prev.read_calls;
+        prev = perf;
+        prev_us = now;
+        if (st.state != PLAYER_PLAYING) {
+            continue;
+        }
+        unsigned load = wall ? (unsigned)((uint64_t)busy * 100 / wall) : 0;
+        unsigned sd = wall ? (unsigned)((uint64_t)read * 100 / wall) : 0;
+        unsigned rt10 = (busy && st.fmt.sample_rate)
+            ? (unsigned)((uint64_t)frames * 10000000ull / st.fmt.sample_rate / busy) : 0;
+        unsigned sd_kbps = read ? (unsigned)((uint64_t)rbytes * 1000 / read) : 0;
+        unsigned per_read = rcalls ? (unsigned)(rbytes / rcalls) : 0;
+        ESP_LOGI(TAG, "pcm fill %u%%  underruns %u  decode %u%% (sd %u%%, %u KB/s, %u B/read) "
+                      "x%u.%u realtime  heap %u (min %u)",
+                 st.buffer_pct, (unsigned)st.underruns, load, sd, sd_kbps, per_read, rt10 / 10, rt10 % 10,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     }
 }
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "TinyDAP Stage 1 bring-up on ESP32-S3-DevKitC-1");
+    ESP_LOGI(TAG, "TinyDAP Stage 1 on ESP32-S3-DevKitC-1");
 
     buttons_init();
     if (oled_init() != ESP_OK) {
         ESP_LOGE(TAG, "OLED init failed");
     }
+    oled_set_contrast(OLED_CONTRAST);
 
-    const esp_vfs_fat_mount_config_t mcfg = { .max_files = 2 };
-    if (esp_vfs_fat_spiflash_mount_ro("/flash", "music", &mcfg) == ESP_OK) {
-        find_track();
-    }
-    if (s_track[0]) {
-        ESP_LOGI(TAG, "test track in flash: %s", s_track);
-        atomic_store(&s_out, MODE_MUSIC);
-        atomic_store(&s_level_db, -12);
-    } else {
-        ESP_LOGI(TAG, "no audio in flash; test tone only");
-    }
+    audio_sink_t *i2s = i2s_sink_create(BOARD_I2S_PORT, BOARD_I2S_BCLK, BOARD_I2S_WS, BOARD_I2S_DOUT, -1);
+    audio_sink_t *sink = gain_sink_create(i2s);
+    audio_format_t fmt = { .sample_rate = 44100, .bits_per_sample = 16, .channels = 2 };
+    configASSERT(sink->open(sink, &fmt) == 0);
+    set_volume_db(DEFAULT_VOLUME_DB);
 
-    audio_sink_t *sink = i2s_sink_create(BOARD_I2S_PORT, BOARD_I2S_BCLK, BOARD_I2S_WS, BOARD_I2S_DOUT, -1);
-    xTaskCreatePinnedToCore(audio_task, "audio", 16384, sink, 20, NULL, 1);
-
-    /* A button that reads as held at boot is miswired (both legs in one row). */
-    vTaskDelay(pdMS_TO_TICKS(50));
-    for (int i = 0; i < 5; i++) buttons_poll();
-    for (int i = 0; i < BTN_COUNT; i++) {
-        if (button_is_down((button_t)i)) {
-            ESP_LOGW(TAG, "%s (GPIO %d) reads as pressed at boot: check its legs are in two different rows",
-                     button_name((button_t)i), button_gpio((button_t)i));
+    const char *root = SDCARD_MOUNT;
+    bool storage_ok = sdcard_mount();
+    if (!storage_ok) {
+        const esp_vfs_fat_mount_config_t mcfg = { .max_files = 2 };
+        if (esp_vfs_fat_spiflash_mount_ro(FLASH_MOUNT, "music", &mcfg) == ESP_OK) {
+            ESP_LOGW(TAG, "no SD card: browsing the test audio in flash");
+            root = FLASH_MOUNT;
+            storage_ok = true;
         }
     }
 
-    static fb_t fb;
-    button_t last = BTN_COUNT;
-    uint32_t presses = 0;
-    int64_t next_frame = 0;
-    for (;;) {
-        button_t b = buttons_poll();
-        if (b != BTN_COUNT) {
-            last = b;
-            presses++;
-            switch (b) {
-            case BTN_PLAY: atomic_store(&s_on, !atomic_load(&s_on)); break;
-            case BTN_NEXT: {
-                int first = s_track[0] ? MODE_MUSIC : OUT_BOTH;
-                int next = atomic_load(&s_out) + 1;
-                atomic_store(&s_out, next > OUT_RIGHT ? first : next);
-                break;
-            }
-            case BTN_PREV:
-                if (atomic_load(&s_out) == MODE_MUSIC) atomic_store(&s_restart, true);
-                else atomic_store(&s_freq_i, (atomic_load(&s_freq_i) + 1) % 3);
-                break;
-            case BTN_VOLUP: if (atomic_load(&s_level_db) < -6) atomic_fetch_add(&s_level_db, 3); break;
-            case BTN_VOLDN: if (atomic_load(&s_level_db) > -45) atomic_fetch_sub(&s_level_db, 3); break;
-            default: break;
-            }
-            ESP_LOGI(TAG, "button %s (GPIO %d): tone %s, %d Hz, %s, %d dB", button_name(b), button_gpio(b),
-                     atomic_load(&s_on) ? "on" : "off", (int)FREQS[atomic_load(&s_freq_i)],
-                     OUT_NAME[atomic_load(&s_out)], atomic_load(&s_level_db));
-        }
-        int64_t now = esp_timer_get_time();
-        if (now >= next_frame) {
-            draw(&fb, last, presses);
-            oled_show(&fb);
-            next_frame = now + 50000;
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
+    /* PCM5102A is stereo: no downmix (the Cardputer's ES8311 needed one). */
+    player_start(sink, false);
+
+    s_raw = xQueueCreate(16, sizeof(button_event_t));
+    player_ops_t ops = { ops_play, ops_toggle_pause, ops_stop, ops_volume, ops_set_next, NULL };
+    ui_app_init(&s_app, root, storage_ok, &ops, DEFAULT_VOLUME_DB);
+
+    xTaskCreatePinnedToCore(input_task, "input", 3072, NULL, PRIO_INPUT, NULL, CORE_SYSTEM);
+    xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, PRIO_UI, NULL, CORE_SYSTEM);
+    xTaskCreatePinnedToCore(stats_task, "stats", 4096, NULL, PRIO_STATS, NULL, CORE_SYSTEM);
 }

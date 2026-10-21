@@ -10,3 +10,7 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_FREERTOS_HZ=1000
 # Read-only FAT image in flash for test audio (flash_data/)
 CONFIG_FATFS_LFN_HEAP=y
+# Player (as Stage 0): main task builds the first folder listing
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
