@@ -160,3 +160,12 @@ board stays in download mode otherwise). Later flashes work without buttons.
 
 Verified 2026-10-21: OLED, all five buttons (40 ms debounce; 15 ms let
 presses register twice), and FLAC playback from flash through the PCM5102A.
+
+**N8R8 board (YEJMKJ, dual USB-C), 2026-10-21:** same pin order as the
+DevKitC-1. Use the USB-C port that enumerates as "USB JTAG_serial debug
+unit" (Espressif, PID 0x1001); the other port is a WCH CH343 USB-UART that
+the firmware's console doesn't use. esptool 5.4's fast reflash (it only
+rewrites changed sectors) once wrote the app at the wrong offset after a
+verify failure; if a flash log shows "Verification failed after fast
+reflash", erase the app partition (`esptool erase-region 0x10000 0x200000`)
+and flash again, then check with `esptool verify-flash`.
