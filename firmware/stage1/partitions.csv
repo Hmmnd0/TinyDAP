@@ -1,0 +1,7 @@
+# Stage 1: 8 MB layout (matches Rev A's N8R8). "music" holds a read-only
+# FAT image built from flash_data/ until the microSD card is wired.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000
+phy_init, data, phy,     0xf000,   0x1000
+factory,  app,  factory, 0x10000,  0x200000
+music,    data, fat,     0x210000, 0x5F0000

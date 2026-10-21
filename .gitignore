@@ -3,3 +3,6 @@ build/
 sdkconfig.old
 managed_components/
 sdkconfig
+
+# Local test audio for firmware/stage1 (copyrighted music, never commit)
+firmware/stage1/flash_data/

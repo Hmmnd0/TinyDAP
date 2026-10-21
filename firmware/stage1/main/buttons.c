@@ -5,7 +5,9 @@
 #include "board_devkitc.h"
 #include "driver/gpio.h"
 
-#define DEBOUNCE_POLLS 3
+/* Polled every 5 ms. Cheap tactile switches chatter for tens of ms on both
+ * press and release, so a state must hold for 40 ms to count. */
+#define DEBOUNCE_POLLS 8
 
 static const int s_gpio[BTN_COUNT] = {
     BOARD_BTN_PLAY, BOARD_BTN_PREV, BOARD_BTN_NEXT, BOARD_BTN_VOLUP, BOARD_BTN_VOLDN,
