@@ -132,3 +132,25 @@ Connect and test one part at a time:
 5. microSD: 4-bit SDIO, then full playback.
 
 The firmware needs a DevKitC board target with these pins before step 1.
+
+## Bring-up firmware
+
+`firmware/stage1/` is a small ESP-IDF project that checks the wiring before
+the full player is ported. It reuses `components/player` (tone generator)
+and `components/ui` (framebuffer and font) and the Cardputer's `i2s_sink`.
+
+- OLED: status screen; five boxes along the bottom fill while each button is held
+- PCM5102A: 44.1 kHz 16-bit test tone, -24 dBFS to start
+- Play: tone on/off · Next: both / left only / right only · Prev: 440 / 1000 / 220 Hz · Vol+/-: 3 dB steps
+- A button that reads as pressed at boot is logged as miswired
+
+```bash
+cd firmware/stage1 && idf.py build flash monitor
+```
+
+**First flash on a new DevKit:** the factory demo firmware ignores the
+automatic reset, so put the board in download mode by hand: unplug USB,
+hold BOOT, plug in, release BOOT. After flashing, press RESET once (the
+board stays in download mode otherwise). Later flashes work without buttons.
+
+Verified 2026-10-21: OLED shows the bring-up screen.
