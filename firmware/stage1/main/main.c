@@ -167,7 +167,7 @@ static void ui_task(void *arg)
 {
     player_status_t st;
     bool screen_on = true;
-    uint32_t last_input = now_ms();
+    [[maybe_unused]] uint32_t last_input = now_ms();  /* used only with the timeout on */
     for (;;) {
         button_event_t e;
         bool got = xQueueReceive(s_raw, &e, pdMS_TO_TICKS(UI_FRAME_MS)) == pdTRUE;
