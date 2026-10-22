@@ -191,10 +191,12 @@ static void ui_task(void *arg)
             }
             got = xQueueReceive(s_raw, &e, 0) == pdTRUE;
         }
-        if (SCREEN_TIMEOUT_MS && screen_on && now_ms() - last_input >= SCREEN_TIMEOUT_MS) {
+#if SCREEN_TIMEOUT_MS > 0
+        if (screen_on && now_ms() - last_input >= SCREEN_TIMEOUT_MS) {
             oled_set_on(false);
             screen_on = false;
         }
+#endif
         ui_app_tick(&s_app, &st, now_ms());
         if (screen_on) {
             ui_app_render(&s_app, &s_fb, &st, now_ms());
