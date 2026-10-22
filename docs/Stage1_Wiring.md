@@ -171,3 +171,11 @@ and flash again, then check with `esptool verify-flash`.
 
 Verified 2026-10-21 on the N8R8 board: FLAC playback heard through the
 PCM5102A with VIN on 3.3 V (with VIN on 5Vin the DAC had no power).
+
+**microSD, 2026-10-21:** the 16 GB card (CID name "SDABC") mounts in 1-bit
+SDMMC at 20 MHz and plays with 0 underruns at ~2,080 KB/s read (vs 1,450
+KB/s over SPI on the Cardputer). 4-bit fails with a CRC error on the first
+4-bit data read (SSR) at every clock from 40 MHz down to 400 kHz, so it is
+not signal timing. Ruled out on the bench: every line connected to the
+breakout's pull-ups, no line-to-line shorts, and no permutation of the
+D1/DAT2/D3 GPIOs works. Next: try a different (name-brand) microSD card.
