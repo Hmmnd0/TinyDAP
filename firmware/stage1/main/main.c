@@ -38,9 +38,11 @@ static const char *TAG = "tinydap";
 #define UI_FRAME_MS         33
 #define FLASH_MOUNT         "/flash"
 
-/* Burn-in protection (write-up §8): dim, and off after inactivity. */
+/* Burn-in protection (write-up §8): dim, and off after inactivity. The
+ * timeout is off for the breadboard: with five buttons there's no spare one
+ * to wake the screen without also acting. 0 disables it. */
 #define OLED_CONTRAST       0x7F
-#define SCREEN_TIMEOUT_MS   30000
+#define SCREEN_TIMEOUT_MS   0
 
 #define PRIO_INPUT  8
 #define PRIO_UI     5
