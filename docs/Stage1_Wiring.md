@@ -204,3 +204,14 @@ Remaining suspects are hardware: DAT1-DAT3 between the breakout pins and the
 card contacts, or pull-up strength (the breakout has 47k; Espressif
 recommends 10k on CMD and D0-D3). Next tests: 10k pull-ups from D1/DAT2/D3
 to 3.3 V, then a continuity check or a second breakout.
+
+**2026-10-23, logic capture:** with the card switched to 4-bit and the host
+left in 1-bit at 400 kHz, the firmware sampled CLK and DAT0-DAT3 as GPIO
+and decoded the card's 4-bit stream for sector 0. The partition entry
+(`00 82 03 00 0C ...`) and the `55 AA` signature arrive correctly on all
+four lines (the decoder's framing was one byte off, the data itself is
+right). So the card, breakout, wiring and ESP32 input pads all carry valid
+4-bit data. 10k pull-ups were added on D1/DAT2/D3 (confirmed from firmware:
+those lines now read high against the internal pull-down); 4-bit still
+fails. The fault is in how the SDMMC host receives 4-bit data in this setup,
+not the signals. Still open; 1-bit (~2 MB/s) is the working fallback.
