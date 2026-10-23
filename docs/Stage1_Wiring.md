@@ -187,4 +187,10 @@ header didn't change it, and no assignment of GPIO 42/2/1/21 to D1-D3
 works. ESP-IDF v6.1's SDMMC driver configures D1-D3 correctly for 4-bit
 on a GPIO-matrix slot (checked in the source). Remaining suspects: one of
 DAT1-DAT3 not reaching the card inside the breakout (socket contact), or a
-GPIO path; next test is moving D1-D3 to other free GPIOs.
+GPIO path. Moving D1/DAT2/D3 to GPIO 8/14/47 fails the same way, and so
+does SDMMC slot 0 instead of slot 1, so the ESP32 pins and slot are ruled
+out too. What's left is the breakout itself (DAT1-DAT3 not reaching the
+card's contacts in the socket) or the SSR read specifically. Next: a
+continuity check from the breakout's D1/DAT2/D3 pins to the card socket.
+Until then the firmware falls back to 1-bit, which is fast enough for
+every format TinyDAP plays (~2 MB/s).
