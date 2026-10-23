@@ -179,3 +179,12 @@ KB/s over SPI on the Cardputer). 4-bit fails with a CRC error on the first
 not signal timing. Ruled out on the bench: every line connected to the
 breakout's pull-ups, no line-to-line shorts, and no permutation of the
 D1/DAT2/D3 GPIOs works. Next: try a different (name-brand) microSD card.
+
+**2026-10-23:** a new SanDisk 32 GB card (CID "SE32G") behaves the same:
+1-bit at 20 MHz works; 4-bit fails with a CRC error on the first 4-bit read
+(SSR), also at 400 kHz. So it is not the card. Resoldering the breakout's
+header didn't change it, and no assignment of GPIO 42/2/1/21 to D1-D3
+works. ESP-IDF v6.1's SDMMC driver configures D1-D3 correctly for 4-bit
+on a GPIO-matrix slot (checked in the source). Remaining suspects: one of
+DAT1-DAT3 not reaching the card inside the breakout (socket contact), or a
+GPIO path; next test is moving D1-D3 to other free GPIOs.
