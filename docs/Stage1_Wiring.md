@@ -220,3 +220,10 @@ not the signals. Still open; 1-bit (~2 MB/s) is the working fallback.
 Boot log: AP 64 Mbit generation-3 device, 8 MB found, memory test OK; 8 MB
 added to the heap with 32 KB of internal RAM reserved for DMA. The boot
 memory test adds ~0.4 s to startup.
+
+**2026-10-23, host-contention test:** the same capture run twice on sector 0
+at 400 kHz, once with the host in 1-bit and once with the host genuinely in
+4-bit (`set_bus_width(4)`). Both captures are identical (same nibbles, same
+55AA position, same handful of decode slips from the software sampler), so
+the SDMMC host is not driving or disturbing DAT1-3 in 4-bit mode. Hypothesis
+ruled out; root cause still open.
