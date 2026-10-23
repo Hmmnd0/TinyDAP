@@ -194,3 +194,13 @@ card's contacts in the socket) or the SSR read specifically. Next: a
 continuity check from the breakout's D1/DAT2/D3 pins to the card socket.
 Until then the firmware falls back to 1-bit, which is fast enough for
 every format TinyDAP plays (~2 MB/s).
+
+**2026-10-23, later:** a minimal standalone 4-bit mount test (no player
+code) fails the same way on both ESP-IDF v6.1 and v5.5.6, so it is not our
+firmware and not a v6.1 regression. A test that sampled DAT0-DAT3 as GPIO
+during a 4-bit read saw only ~55 edges per line (the reads aborted early),
+so it does not prove the card drives DAT1-DAT3; treat it as inconclusive.
+Remaining suspects are hardware: DAT1-DAT3 between the breakout pins and the
+card contacts, or pull-up strength (the breakout has 47k; Espressif
+recommends 10k on CMD and D0-D3). Next tests: 10k pull-ups from D1/DAT2/D3
+to 3.3 V, then a continuity check or a second breakout.
