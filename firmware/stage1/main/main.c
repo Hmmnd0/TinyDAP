@@ -240,6 +240,10 @@ static void stats_task(void *arg)
                  st.buffer_pct, (unsigned)st.underruns, load, sd, sd_kbps, per_read, rt10 / 10, rt10 % 10,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+        ESP_LOGI(TAG, "psram free %u KB (min %u KB)  internal largest block %u",
+                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                 (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     }
 }
 

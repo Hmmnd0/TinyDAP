@@ -58,8 +58,8 @@ board's `3.3V` pin unconnected; it's an output.
 | CLK | GPIO **39** |
 | CMD | GPIO **40** |
 | D0 | GPIO **41** |
-| D1 | GPIO **42** |
-| DAT2 | GPIO **2** |
+| D1 | GPIO **8** (was 42; moved during the 4-bit investigation) |
+| DAT2 | GPIO **14** (was 2) |
 | D3 | GPIO **1** |
 | DET | GPIO **21** (optional card detect) |
 
@@ -215,3 +215,8 @@ right). So the card, breakout, wiring and ESP32 input pads all carry valid
 those lines now read high against the internal pull-down); 4-bit still
 fails. The fault is in how the SDMMC host receives 4-bit data in this setup,
 not the signals. Still open; 1-bit (~2 MB/s) is the working fallback.
+
+**PSRAM, 2026-10-23:** octal PSRAM enabled (`CONFIG_SPIRAM_MODE_OCT`, 80 MHz).
+Boot log: AP 64 Mbit generation-3 device, 8 MB found, memory test OK; 8 MB
+added to the heap with 32 KB of internal RAM reserved for DMA. The boot
+memory test adds ~0.4 s to startup.

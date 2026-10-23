@@ -27,7 +27,7 @@
 #define BOARD_SD_CLK  39
 #define BOARD_SD_CMD  40
 #define BOARD_SD_D0   41
-#define BOARD_SD_D1   42
-#define BOARD_SD_D2   2
+#define BOARD_SD_D1   8
+#define BOARD_SD_D2   14
 #define BOARD_SD_D3   1
 #define BOARD_SD_DET  21
